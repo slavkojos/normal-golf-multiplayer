@@ -9,7 +9,7 @@ namespace NormalGolfMultiplayer.Net
     {
         public const string Magic = "NGMP";
         /// <summary>Bump whenever the wire format changes; mismatched peers are refused with a clear message.</summary>
-        public const ushort Version = 2;
+        public const ushort Version = 3;
         public const int DefaultPort = 7777;
         public const int MaxNameLength = 20;
         public const int MaxChatLength = 120;
@@ -46,6 +46,7 @@ namespace NormalGolfMultiplayer.Net
         Holed = 7,        // both ways: [strokes][par]
         Chat = 8,         // both ways: [text]
         Score = 9,        // both ways: [ScoreCard] — the sender's Front Nine round
+        Turn = 10,        // host -> clients: [activePlayerId]
     }
 
     [Flags]

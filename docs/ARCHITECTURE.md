@@ -36,7 +36,7 @@ ever talk to the host. Transport is UDP via LiteNetLib.
 * **State**: `Msg.State`, unreliable, 20 Hz, ~45 bytes — position, yaw, pitch, flags (in-world, golfing, crouched,
   ball visible/trail/moving, Play Nine), club, ball position and a ball "epoch". Each carries a sequence number and
   the sender's session clock.
-* **Events**: `Shot`, `Holed`, `Chat`, `PlayerInfo`, `Score` are reliable-ordered.
+* **Events**: `Shot`, `Holed`, `Chat`, `PlayerInfo`, `Score` and host-authored `Turn` are reliable-ordered. The welcome packet includes the current turn so late joiners see the same shot order. The order advances by player ID after a shot, or when the active player leaves; it is advisory and does not block swings.
 * **Interpolation**: receivers render each player ~100 ms in the past (`SnapshotBuffer`), estimating the clock offset
   from the fastest recent packets, so jitter and a lost packet don't produce stutter. Teleports would otherwise be
   interpolated as a slide across the map, so the ball carries an **epoch** that bumps on every reset, and large

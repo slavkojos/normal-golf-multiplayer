@@ -333,7 +333,8 @@ namespace NormalGolfMultiplayer
                     var local = Game.LocalPlayer.Capture();
                     var input = InputManager.instance != null ? InputManager.instance.input : null;
                     sb.Append($"local flags={local.Flags} pos={local.Pos} yaw={local.Yaw:0} ball={local.BallPos} epoch={local.BallEpoch} " +
-                              $"cursor={Cursor.lockState} inputActive={(input != null && input.inputIsActive)} uiCapture={UI.MultiplayerUI.CapturingInput}");
+                              $"cursor={Cursor.lockState} inputActive={(input != null && input.inputIsActive)} uiCapture={UI.MultiplayerUI.CapturingInput} " +
+                              $"turn={Net.NetSession.Instance.ActiveTurnId}");
                     foreach (var rp in Remote.RemoteWorld.Instance.Players.Values)
                         sb.Append($" | #{rp.Info.Id} {rp.Info.Name} pose={rp.HasPose} flags={rp.Flags} pos={rp.Position} ball={rp.BallPosition} view={(rp.View != null)}");
                     return sb.ToString();

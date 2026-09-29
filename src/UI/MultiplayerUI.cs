@@ -21,17 +21,21 @@ namespace NormalGolfMultiplayer.UI
         /// <summary>True while our menu or chat box owns the keyboard/mouse; game input is paused meanwhile.</summary>
         public static bool CapturingInput => _instance != null && (_instance._menuOpen || _instance._chatOpen);
 
-        private const float WindowWidth = 520f;
+        private const float WindowWidth = 560f;
         private const int ChatHistory = 40;
-        private static readonly Color Accent = new Color(0.42f, 0.83f, 0.46f);
-        private static readonly Color ErrorColor = new Color(1f, 0.45f, 0.4f);
+        private static readonly Color Accent = new Color(0.46f, 0.91f, 0.72f);
+        private static readonly Color ErrorColor = new Color(1f, 0.49f, 0.46f);
+        private static readonly Color Muted = new Color(0.62f, 0.69f, 0.72f);
 
         private bool _menuOpen;
         private bool _scoreboardOpen;
         private bool _chatOpen;
         private int _chatOpenedFrame;
         private string _chatText = "";
-        private Rect _windowRect = new Rect(40f, 120f, WindowWidth, 10f);
+        private Rect _windowRect = new Rect(40f, 90f, WindowWidth, 10f);
+        private Vector2 _menuScroll;
+        private float _viewportHeight;
+        private bool _menuPlaced;
 
         private string _nameField;
         private string _hostPortField;
@@ -50,7 +54,8 @@ namespace NormalGolfMultiplayer.UI
         private readonly List<ChatEntry> _chat = new List<ChatEntry>();
         private float _hintUntil;
 
-        private GUIStyle _window, _title, _header, _label, _small, _button, _bigButton, _field, _swatch, _hud, _chatStyle;
+        private GUIStyle _window, _card, _playerRow, _title, _header, _label, _small, _button, _bigButton, _dangerButton, _field, _swatch, _hud, _chatStyle;
+        private GUIStyle _eyebrow, _turnName, _pill, _turnPanel;
         private GUIStyle _scoreHead, _scoreRowHead, _scorePar, _scoreCell, _scoreName;
         private Texture2D _white;
 
@@ -93,6 +98,11 @@ namespace NormalGolfMultiplayer.UI
             {
                 SetFeedback(s.IsHost ? "Hosting! Share your IP and port with friends." : "Connected!", error: false);
                 _hintUntil = Time.unscaledTime + 12f;
+            };
+            s.TurnChanged += id =>
+            {
+                if (s.InSession && s.Players.Count > 1 && id == s.LocalId)
+                    Toast("Your turn to shoot", Accent);
             };
         }
 
@@ -193,16 +203,27 @@ namespace NormalGolfMultiplayer.UI
             GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
             float w = Screen.width / scale;
             float h = Screen.height / scale;
+            _viewportHeight = h;
+            var overlayRows = _scoreboardOpen && !_menuOpen ? CollectScoreRows(NetSession.Instance) : null;
 
-            DrawHud(w);
-            DrawToasts(w);
+            if (!_menuOpen && (overlayRows == null || overlayRows.Count == 0))
+            {
+                DrawHud(w);
+                DrawToasts(w);
+            }
             DrawChat(h);
-            if (_scoreboardOpen && !_menuOpen)
-                DrawScoreboardOverlay(w);
+            if (overlayRows != null && overlayRows.Count > 0)
+                DrawScoreboardOverlay(w, overlayRows);
 
             if (_menuOpen)
             {
-                _windowRect.width = WindowWidth;
+                _windowRect.width = Mathf.Min(WindowWidth, w - 24f);
+                if (!_menuPlaced)
+                {
+                    _windowRect.x = Mathf.Max(12f, (w - _windowRect.width) * 0.5f);
+                    _windowRect.y = Mathf.Max(12f, (h - 700f) * 0.5f);
+                    _menuPlaced = true;
+                }
                 _windowRect = GUILayout.Window(0x4E474D50, _windowRect, DrawWindow, GUIContent.none, _window);
                 _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, w - _windowRect.width);
                 _windowRect.y = Mathf.Clamp(_windowRect.y, 0f, Mathf.Max(0f, h - _windowRect.height));
@@ -227,25 +248,35 @@ namespace NormalGolfMultiplayer.UI
             {
                 int n = s.Players.Count;
                 string who = n == 1 ? "just you" : $"{n} players";
-                line = s.IsHost ? $"Multiplayer: hosting · {who}" : $"Multiplayer: connected · {who} · {s.PingMs} ms";
-                if (Time.unscaledTime < _hintUntil)
-                    line += $"\n{ModConfig.MenuKey.Value} menu · {ModConfig.ChatKey.Value} chat";
+                line = s.IsHost ? $"HOSTING  ·  {who}" : $"CONNECTED  ·  {who}  ·  {s.PingMs} ms";
             }
-            var rect = new Rect(screenW - 420f, 12f, 408f, 44f);
-            ShadowLabel(rect, line, _hud, Color.white);
+            bool showTurn = s.InSession && s.Players.Count > 1 && s.Players.ContainsKey(s.ActiveTurnId);
+            var rect = new Rect(16f, 82f, Mathf.Min(324f, screenW - 32f), showTurn ? 100f : 42f);
+            GUI.Box(rect, GUIContent.none, _turnPanel);
+            GUI.Label(new Rect(rect.x + 12f, rect.y + 7f, rect.width - 24f, 24f), line, _hud);
+
+            if (!showTurn)
+                return;
+            var active = s.Players[s.ActiveTurnId];
+            GUI.Label(new Rect(rect.x + 12f, rect.y + 37f, rect.width - 24f, 18f), "UP NEXT TO SHOOT", _eyebrow);
+            var old = GUI.contentColor;
+            GUI.contentColor = Color.Lerp(active.Color, Color.white, 0.35f);
+            GUI.Label(new Rect(rect.x + 12f, rect.y + 55f, rect.width - 24f, 32f),
+                active.Id == s.LocalId ? "Your turn" : Truncate(active.Name, 18) + "'s turn", _turnName);
+            GUI.contentColor = old;
         }
 
         private void DrawToasts(float screenW)
         {
             float now = Time.unscaledTime;
             _toasts.RemoveAll(t => t.Until < now);
-            float y = 64f;
+            float y = NetSession.Instance.InSession && NetSession.Instance.Players.Count > 1 ? 192f : 134f;
             foreach (var t in _toasts)
             {
                 float alpha = Mathf.Clamp01((t.Until - now) / 0.6f);
                 var c = Color.Lerp(t.Color, Color.white, 0.3f);
                 c.a = alpha;
-                ShadowLabel(new Rect(screenW - 620f, y, 608f, 26f), t.Text, _hud, c);
+                ShadowLabel(new Rect(20f, y, Mathf.Min(500f, screenW - 40f), 26f), t.Text, _chatStyle, c);
                 y += 26f;
             }
         }
@@ -303,27 +334,42 @@ namespace NormalGolfMultiplayer.UI
             var s = NetSession.Instance;
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label("NORMAL GOLF MULTIPLAYER", _title);
+            GUILayout.BeginVertical();
+            GUILayout.Label("NORMAL GOLF  /  ONLINE", _eyebrow);
+            GUILayout.Label("Multiplayer", _title);
+            GUILayout.EndVertical();
             GUILayout.FlexibleSpace();
-            GUILayout.Label($"v{Plugin.Version} · {ModConfig.MenuKey.Value} to close", _small);
+            if (GUILayout.Button("Close  ×", _button, GUILayout.Width(88f), GUILayout.Height(30f)))
+                _menuOpen = false;
             GUILayout.EndHorizontal();
-            GUILayout.Space(6f);
+            GUILayout.Space(12f);
 
+            _menuScroll = GUILayout.BeginScrollView(_menuScroll, false, false, GUILayout.MaxHeight(Mathf.Max(200f, _viewportHeight - 160f)));
+            GUILayout.BeginVertical(_card);
+            SectionHeading("YOUR GOLFER", "Choose how friends see you");
             DrawIdentity(s);
-            Separator();
+            GUILayout.EndVertical();
+            GUILayout.Space(10f);
 
             if (s.Mode == SessionMode.Offline)
             {
+                GUILayout.BeginVertical(_card);
                 DrawHostSection();
-                Separator();
+                GUILayout.EndVertical();
+                GUILayout.Space(10f);
+                GUILayout.BeginVertical(_card);
                 DrawJoinSection();
+                GUILayout.EndVertical();
             }
             else if (!s.InSession)
             {
+                GUILayout.BeginVertical(_card);
+                SectionHeading("CONNECTING", "Establishing a multiplayer session");
                 GUILayout.Label(s.Status, _label);
                 GUILayout.Space(6f);
                 if (GUILayout.Button("Cancel", _button, GUILayout.Width(120f)))
                     s.Leave();
+                GUILayout.EndVertical();
             }
             else
             {
@@ -332,14 +378,26 @@ namespace NormalGolfMultiplayer.UI
 
             if (!string.IsNullOrEmpty(_feedback))
             {
-                Separator();
+                GUILayout.Space(10f);
+                GUILayout.BeginVertical(_card);
                 var prev = GUI.contentColor;
                 GUI.contentColor = _feedbackIsError ? ErrorColor : Accent;
                 GUILayout.Label(_feedback, _label);
                 GUI.contentColor = prev;
+                GUILayout.EndVertical();
             }
+            GUILayout.EndScrollView();
+            GUILayout.Space(10f);
+            GUILayout.Label($"{ModConfig.MenuKey.Value} menu   ·   {ModConfig.ChatKey.Value} chat   ·   {ModConfig.ScoreboardKey.Value} scores      v{Plugin.Version}", _small);
 
-            GUI.DragWindow(new Rect(0, 0, 10000, 32));
+            GUI.DragWindow(new Rect(0, 0, 10000, 56));
+        }
+
+        private void SectionHeading(string heading, string subtitle)
+        {
+            GUILayout.Label(heading, _header);
+            GUILayout.Label(subtitle, _small);
+            GUILayout.Space(8f);
         }
 
         private void DrawIdentity(NetSession s)
@@ -375,7 +433,7 @@ namespace NormalGolfMultiplayer.UI
 
         private void DrawHostSection()
         {
-            GUILayout.Label("HOST A GAME", _header);
+            SectionHeading("HOST A GAME", "Create a room and invite friends");
             GUILayout.BeginHorizontal();
             GUILayout.Label("Port", _label, GUILayout.Width(70f));
             _hostPortField = GUILayout.TextField(_hostPortField, 5, _field, GUILayout.Width(80f));
@@ -401,13 +459,13 @@ namespace NormalGolfMultiplayer.UI
                     GUIUtility.systemCopyBuffer = $"{lan[0]}:{_hostPortField}";
                 GUILayout.EndHorizontal();
             }
-            GUILayout.Label("Friends outside your network need your public IP and UDP port-forwarding on your router, " +
-                            "or a shared VPN such as Tailscale, ZeroTier or Radmin.", _small);
+            GUILayout.Space(4f);
+            GUILayout.Label("Playing over the internet? Forward the UDP port on your router, or use a shared VPN.", _small);
         }
 
         private void DrawJoinSection()
         {
-            GUILayout.Label("JOIN A GAME", _header);
+            SectionHeading("JOIN A GAME", "Enter the host's address and port");
             GUILayout.BeginHorizontal();
             GUILayout.Label("Address", _label, GUILayout.Width(70f));
             _joinAddressField = GUILayout.TextField(_joinAddressField ?? "", 100, _field, GUILayout.Width(220f));
@@ -426,7 +484,8 @@ namespace NormalGolfMultiplayer.UI
 
         private void DrawSession(NetSession s)
         {
-            GUILayout.Label(s.IsHost ? $"HOSTING ON UDP PORT {ModConfig.HostPort.Value}" : $"CONNECTED TO {s.Endpoint.ToUpperInvariant()}", _header);
+            GUILayout.BeginVertical(_card);
+            SectionHeading(s.IsHost ? "YOUR ROOM IS LIVE" : "CONNECTED TO ROOM", s.IsHost ? "Share your address to invite friends" : s.Endpoint);
             if (s.IsHost)
             {
                 var lan = LanAddresses();
@@ -443,12 +502,41 @@ namespace NormalGolfMultiplayer.UI
             {
                 GUILayout.Label($"Ping {s.PingMs} ms", _small);
             }
+            GUILayout.EndVertical();
+            GUILayout.Space(10f);
 
-            GUILayout.Space(6f);
-            GUILayout.Label($"PLAYERS ({s.Players.Count})", _header);
+            GUILayout.BeginVertical(_card);
+            SectionHeading("SHOT ORDER", "A guide for taking turns · shots remain open to everyone");
+            if (s.Players.Count > 1 && s.Players.TryGetValue(s.ActiveTurnId, out var active))
+            {
+                GUILayout.BeginVertical(_turnPanel);
+                GUILayout.Label("UP NEXT TO SHOOT", _eyebrow);
+                var old = GUI.contentColor;
+                GUI.contentColor = Color.Lerp(active.Color, Color.white, 0.35f);
+                GUILayout.Label(active.Id == s.LocalId ? "Your turn" : Truncate(active.Name, 18) + "'s turn", _turnName);
+                GUI.contentColor = old;
+                GUILayout.EndVertical();
+                GUILayout.Space(8f);
+            }
+            else
+            {
+                GUILayout.Label("Waiting for another golfer to join", _small);
+            }
+            GUILayout.Label($"PLAYERS  ·  {s.Players.Count}", _header);
+            GUILayout.Space(4f);
             Vector3? me = LocalPlayer.InWorld ? LocalPlayer.Capture().Pos : (Vector3?)null;
             foreach (var info in s.Players.Values.OrderBy(p => p.Id))
             {
+                RemotePlayer rp = null;
+                string detail = "";
+                if (info.Id != s.LocalId && RemoteWorld.Instance != null && RemoteWorld.Instance.Players.TryGetValue(info.Id, out rp))
+                {
+                    detail = RemoteWorld.Describe(rp);
+                    if (me.HasValue && rp.HasPose)
+                        detail += $" · {Vector3.Distance(me.Value, rp.Position):0}m";
+                }
+
+                GUILayout.BeginVertical(_playerRow);
                 GUILayout.BeginHorizontal();
                 var prev = GUI.contentColor;
                 GUI.contentColor = Color.Lerp(info.Color, Color.white, 0.25f);
@@ -456,28 +544,14 @@ namespace NormalGolfMultiplayer.UI
                 GUI.contentColor = prev;
 
                 string role = info.Id == Protocol.HostId ? " (host)" : "";
-                if (info.Id == s.LocalId)
+                GUILayout.Label(info.Id == s.LocalId ? $"{info.Name}{role} — you" : $"{info.Name}{role}", _label);
+                GUILayout.FlexibleSpace();
+                if (s.Players.Count > 1 && info.Id == s.ActiveTurnId)
+                    GUILayout.Label("UP NEXT", _pill, GUILayout.Width(72f), GUILayout.Height(24f));
+                if (info.Id != s.LocalId)
                 {
-                    GUILayout.Label($"{info.Name}{role} — you", _label);
-                }
-                else
-                {
-                    string detail = "";
-                    RemotePlayer rp = null;
-                    if (RemoteWorld.Instance != null && RemoteWorld.Instance.Players.TryGetValue(info.Id, out rp))
-                    {
-                        detail = RemoteWorld.Describe(rp);
-                        if (me.HasValue && rp.HasPose)
-                            detail += $" · {Vector3.Distance(me.Value, rp.Position):0}m";
-                    }
-                    int ping = s.GetPlayerPing(info.Id);
-                    GUILayout.Label($"{info.Name}{role}", _label, GUILayout.Width(150f));
-                    GUILayout.Label(detail, _small);
-                    GUILayout.FlexibleSpace();
-                    if (s.IsHost || info.Id == Protocol.HostId)
-                        GUILayout.Label($"{ping} ms", _small, GUILayout.Width(52f));
                     GUI.enabled = rp != null && rp.HasPose && LocalPlayer.CanTeleport;
-                    if (GUILayout.Button("Go to", _button, GUILayout.Width(56f)))
+                    if (GUILayout.Button("Go to", _button, GUILayout.Width(65f), GUILayout.Height(26f)))
                     {
                         LocalPlayer.TeleportNear(rp.Position);
                         _menuOpen = false;
@@ -485,16 +559,29 @@ namespace NormalGolfMultiplayer.UI
                     GUI.enabled = true;
                 }
                 GUILayout.EndHorizontal();
+                if (info.Id != s.LocalId)
+                {
+                    GUILayout.BeginHorizontal();
+                    GUILayout.Label(string.IsNullOrEmpty(detail) ? "In menus" : detail, _small);
+                    GUILayout.FlexibleSpace();
+                    if (s.IsHost || info.Id == Protocol.HostId)
+                        GUILayout.Label($"{s.GetPlayerPing(info.Id)} ms", _small);
+                    GUILayout.EndHorizontal();
+                }
+                GUILayout.EndVertical();
             }
 
             if (s.Players.Count > 1 && LocalPlayer.InWorld && !LocalPlayer.CanTeleport)
                 GUILayout.Label("\"Go to\" works while you're walking (not golfing or in a cutscene).", _small);
+            GUILayout.EndVertical();
 
-            Separator();
+            GUILayout.Space(10f);
+            GUILayout.BeginVertical(_card);
             DrawScoreboard(s);
+            GUILayout.EndVertical();
 
-            GUILayout.Space(8f);
-            if (GUILayout.Button(s.IsHost ? "Stop hosting" : "Leave session", _bigButton, GUILayout.Width(180f)))
+            GUILayout.Space(10f);
+            if (GUILayout.Button(s.IsHost ? "Stop hosting" : "Leave session", _dangerButton, GUILayout.Width(180f), GUILayout.Height(36f)))
                 s.Leave();
         }
 
@@ -617,11 +704,9 @@ namespace NormalGolfMultiplayer.UI
         }
 
         /// <summary>Passive overlay: no controls, so it never steals the mouse while you play.</summary>
-        private void DrawScoreboardOverlay(float screenW)
+        private void DrawScoreboardOverlay(float screenW, List<ScoreRow> rows)
         {
-            var rows = CollectScoreRows(NetSession.Instance);
-            if (rows.Count == 0)
-                return;
+            var session = NetSession.Instance;
             float width = ScoreNameWidth + ScoreCard.HoleCount * ScoreCellWidth + ScoreTotalWidth * 2f + 36f;
             // Generous row height: clipping a player's row is much worse than a little extra padding.
             const float titleHeight = 30f, rowHeight = 23f, padding = 30f;
@@ -629,7 +714,12 @@ namespace NormalGolfMultiplayer.UI
             var area = new Rect((screenW - width) * 0.5f, 8f, width, height);
             GUI.Box(area, GUIContent.none, _window);
             GUILayout.BeginArea(new Rect(area.x + 18f, area.y + 12f, area.width - 36f, area.height - 16f));
+            GUILayout.BeginHorizontal();
             GUILayout.Label("FRONT NINE", _header);
+            GUILayout.FlexibleSpace();
+            if (session.Players.Count > 1 && session.Players.TryGetValue(session.ActiveTurnId, out var active))
+                GUILayout.Label("NEXT: " + (active.Id == session.LocalId ? "YOU" : Truncate(active.Name, 12)), _eyebrow);
+            GUILayout.EndHorizontal();
             DrawScoreTable(rows);
             GUILayout.EndArea();
         }
@@ -755,32 +845,87 @@ namespace NormalGolfMultiplayer.UI
             return t;
         }
 
+        private static Texture2D RoundedTex(Color color, int radius = 10)
+        {
+            int size = radius * 2 + 2;
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                filterMode = FilterMode.Bilinear,
+            };
+            var pixels = new Color[size * size];
+            float center = size * 0.5f;
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float dx = Mathf.Max(Mathf.Abs(x + 0.5f - center) - (center - radius), 0f);
+                    float dy = Mathf.Max(Mathf.Abs(y + 0.5f - center) - (center - radius), 0f);
+                    Color pixel = color;
+                    pixel.a *= Mathf.Clamp01(radius + 0.5f - Mathf.Sqrt(dx * dx + dy * dy));
+                    pixels[y * size + x] = pixel;
+                }
+            }
+            tex.SetPixels(pixels);
+            tex.Apply();
+            return tex;
+        }
+
         private void EnsureStyles()
         {
             if (_window != null)
                 return;
             _white = Tex(Color.white);
-            var panel = Tex(new Color(0.07f, 0.08f, 0.1f, 0.95f));
-            var fieldBg = Tex(new Color(0.16f, 0.17f, 0.21f, 1f));
-            var fieldFocus = Tex(new Color(0.2f, 0.22f, 0.27f, 1f));
-            var btn = Tex(new Color(0.2f, 0.36f, 0.24f, 1f));
-            var btnHover = Tex(new Color(0.26f, 0.46f, 0.3f, 1f));
-            var btnActive = Tex(new Color(0.16f, 0.28f, 0.19f, 1f));
+            var panel = RoundedTex(new Color(0.055f, 0.078f, 0.09f, 0.97f), 16);
+            var card = RoundedTex(new Color(0.12f, 0.15f, 0.17f, 0.97f));
+            var row = RoundedTex(new Color(0.18f, 0.21f, 0.23f, 0.92f), 8);
+            var fieldBg = RoundedTex(new Color(0.18f, 0.22f, 0.24f, 1f), 7);
+            var fieldFocus = RoundedTex(new Color(0.24f, 0.30f, 0.31f, 1f), 7);
+            var btn = RoundedTex(new Color(0.23f, 0.31f, 0.31f, 1f), 8);
+            var btnHover = RoundedTex(new Color(0.31f, 0.40f, 0.39f, 1f), 8);
+            var btnActive = RoundedTex(new Color(0.17f, 0.24f, 0.24f, 1f), 8);
+            var primary = RoundedTex(new Color(0.20f, 0.59f, 0.45f, 1f), 8);
+            var primaryHover = RoundedTex(new Color(0.25f, 0.68f, 0.52f, 1f), 8);
+            var danger = RoundedTex(new Color(0.36f, 0.19f, 0.20f, 1f), 8);
+            var pill = RoundedTex(new Color(0.15f, 0.40f, 0.33f, 1f), 6);
+            var turn = RoundedTex(new Color(0.07f, 0.24f, 0.23f, 0.97f), 10);
 
             _window = new GUIStyle(GUI.skin.box)
             {
                 normal = { background = panel },
-                padding = new RectOffset(18, 18, 14, 16),
-                border = new RectOffset(0, 0, 0, 0),
+                padding = new RectOffset(18, 18, 18, 16),
+                border = new RectOffset(17, 17, 17, 17),
             };
-            _title = new GUIStyle(GUI.skin.label) { fontSize = 20, fontStyle = FontStyle.Bold, normal = { textColor = Accent } };
-            _header = new GUIStyle(GUI.skin.label) { fontSize = 14, fontStyle = FontStyle.Bold, normal = { textColor = new Color(0.8f, 0.85f, 0.9f) } };
-            _label = new GUIStyle(GUI.skin.label) { fontSize = 16, wordWrap = true, normal = { textColor = new Color(0.92f, 0.93f, 0.95f) } };
-            _small = new GUIStyle(_label) { fontSize = 13, normal = { textColor = new Color(0.65f, 0.68f, 0.72f) } };
+            _card = new GUIStyle(GUI.skin.box)
+            {
+                normal = { background = card },
+                border = new RectOffset(11, 11, 11, 11),
+                padding = new RectOffset(14, 14, 12, 12),
+                margin = new RectOffset(0, 0, 0, 0),
+            };
+            _playerRow = new GUIStyle(_card)
+            {
+                normal = { background = row },
+                border = new RectOffset(9, 9, 9, 9),
+                padding = new RectOffset(8, 8, 7, 7),
+                margin = new RectOffset(0, 0, 2, 2),
+            };
+            _turnPanel = new GUIStyle(_card)
+            {
+                normal = { background = turn },
+                padding = new RectOffset(12, 12, 9, 9),
+            };
+            _title = new GUIStyle(GUI.skin.label) { fontSize = 27, fontStyle = FontStyle.Bold, normal = { textColor = Color.white } };
+            _eyebrow = new GUIStyle(GUI.skin.label) { fontSize = 11, fontStyle = FontStyle.Bold, normal = { textColor = Accent } };
+            _turnName = new GUIStyle(GUI.skin.label) { fontSize = 21, fontStyle = FontStyle.Bold, normal = { textColor = Color.white } };
+            _header = new GUIStyle(GUI.skin.label) { fontSize = 13, fontStyle = FontStyle.Bold, normal = { textColor = Accent } };
+            _label = new GUIStyle(GUI.skin.label) { fontSize = 15, wordWrap = true, normal = { textColor = new Color(0.94f, 0.97f, 0.97f) } };
+            _small = new GUIStyle(_label) { fontSize = 12, normal = { textColor = Muted } };
             _field = new GUIStyle(GUI.skin.textField)
             {
-                fontSize = 16,
-                padding = new RectOffset(8, 8, 5, 5),
+                fontSize = 15,
+                border = new RectOffset(8, 8, 8, 8),
+                padding = new RectOffset(9, 9, 7, 7),
                 normal = { background = fieldBg, textColor = Color.white },
                 focused = { background = fieldFocus, textColor = Color.white },
                 hover = { background = fieldFocus, textColor = Color.white },
@@ -788,22 +933,42 @@ namespace NormalGolfMultiplayer.UI
             _button = new GUIStyle(GUI.skin.button)
             {
                 fontSize = 14,
+                border = new RectOffset(9, 9, 9, 9),
+                padding = new RectOffset(10, 10, 6, 6),
                 normal = { background = btn, textColor = Color.white },
                 hover = { background = btnHover, textColor = Color.white },
                 active = { background = btnActive, textColor = Color.white },
             };
-            _bigButton = new GUIStyle(_button) { fontSize = 16, fontStyle = FontStyle.Bold, fixedHeight = 34f };
+            _bigButton = new GUIStyle(_button)
+            {
+                fontSize = 15, fontStyle = FontStyle.Bold, fixedHeight = 38f,
+                normal = { background = primary, textColor = Color.white },
+                hover = { background = primaryHover, textColor = Color.white },
+            };
+            _dangerButton = new GUIStyle(_button)
+            {
+                normal = { background = danger, textColor = Color.white },
+                hover = { background = danger, textColor = Color.white },
+            };
+            var swatch = RoundedTex(Color.white, 6);
             _swatch = new GUIStyle(GUI.skin.button)
             {
                 fontSize = 14,
                 fontStyle = FontStyle.Bold,
-                normal = { background = _white, textColor = Color.black },
-                hover = { background = _white, textColor = Color.black },
-                active = { background = _white, textColor = Color.black },
+                border = new RectOffset(7, 7, 7, 7),
+                normal = { background = swatch, textColor = Color.black },
+                hover = { background = swatch, textColor = Color.black },
+                active = { background = swatch, textColor = Color.black },
                 margin = new RectOffset(2, 2, 2, 2),
             };
-            _hud = new GUIStyle(GUI.skin.label) { fontSize = 17, alignment = TextAnchor.UpperRight, normal = { textColor = Color.white } };
-            _chatStyle = new GUIStyle(_hud) { alignment = TextAnchor.UpperLeft };
+            _pill = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 10, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,
+                border = new RectOffset(7, 7, 7, 7),
+                normal = { background = pill, textColor = Accent },
+            };
+            _hud = new GUIStyle(GUI.skin.label) { fontSize = 13, alignment = TextAnchor.MiddleLeft, normal = { textColor = Color.white } };
+            _chatStyle = new GUIStyle(_hud) { fontSize = 16, alignment = TextAnchor.UpperLeft };
             _scoreHead = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 12, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter,

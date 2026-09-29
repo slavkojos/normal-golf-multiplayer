@@ -54,6 +54,14 @@ and logs the result to `BepInEx\LogOutput.log` (`.log.1` for the second copy, `.
 | `host [PORT]`, `join IP:PORT`, `leave`, `password X`, `chat TEXT` | Session control |
 | `menu [off]`, `scoreboard [off]`, `tomenu`, `play story\|nine`, `timescale N`, `bindings`, `quit` | Misc |
 
+### Checking shot order
+
+With two copies connected, open F8 on both. Both should show the host first. Use `hit POWER` on the host, then
+`state` on both copies: `turn` should be the joining player's ID. Take a shot on the joining copy and check that
+both return to the host's ID. Joining during this sequence should show the current turn immediately; disconnecting
+the active player should move the indicator to the next connected player. The indicator is informational and does
+not stop an out-of-turn swing.
+
 ## Cleaning up after testing
 
 Test profiles live in `%USERPROFILE%\AppData\LocalLow\Luke Muscat\Normal Golf Game\ngmp_profiles\`, with per-profile

@@ -30,6 +30,7 @@ namespace NormalGolfMultiplayer.Net
         public string Status { get; private set; } = "Not connected";
         public string Endpoint { get; private set; } = "";
         public PlayerInfo LocalInfo { get; private set; } = new PlayerInfo();
+        public byte ActiveTurnId { get; private set; }
 
         /// <summary>Everyone in the session, including us.</summary>
         public readonly Dictionary<byte, PlayerInfo> Players = new Dictionary<byte, PlayerInfo>();
@@ -42,6 +43,7 @@ namespace NormalGolfMultiplayer.Net
         public event Action<byte, HoledEvent> HoledReceived;
         public event Action<byte, string> ChatReceived;
         public event Action<byte, ScoreCard> ScoreReceived;
+        public event Action<byte> TurnChanged;
         /// <summary>Raised with a human-readable reason when a session ends or a join fails.</summary>
         public event Action<string> SessionEnded;
         public event Action SessionStarted;
@@ -105,6 +107,7 @@ namespace NormalGolfMultiplayer.Net
             RefreshLocalInfo(includeName: true);
             Players.Clear();
             Players[LocalId] = LocalInfo;
+            SetActiveTurn(LocalId);
             Endpoint = $"port {port}";
             Status = $"Hosting on UDP port {port}";
             OnSessionBegan();
@@ -147,6 +150,7 @@ namespace NormalGolfMultiplayer.Net
             Mode = SessionMode.Connecting;
             LocalId = 0;
             Players.Clear();
+            SetActiveTurn(0);
             Endpoint = $"{address}:{port}";
             Status = $"Connecting to {Endpoint}...";
             _timeBase = Time.realtimeSinceStartupAsDouble;
@@ -213,6 +217,7 @@ namespace NormalGolfMultiplayer.Net
             foreach (var p in Players.Values.Where(p => p.Id != LocalId).ToList())
                 PlayerLeft?.Invoke(p);
             Players.Clear();
+            SetActiveTurn(0);
 
             if (_sessionBegan)
                 Application.runInBackground = _prevRunInBackground;
@@ -298,6 +303,8 @@ namespace NormalGolfMultiplayer.Net
             Begin(Msg.Shot, LocalId);
             shot.Write(_w);
             SendFromLocal(DeliveryMethod.ReliableOrdered);
+            if (IsHost)
+                AdvanceTurn(LocalId);
         }
 
         public void SendHoled(HoledEvent holed)
@@ -415,6 +422,7 @@ namespace NormalGolfMultiplayer.Net
 
                 Begin(Msg.Welcome, Protocol.HostId);
                 info.Write(_w);
+                _w.Put(ActiveTurnId);
                 _w.Put((byte)Players.Count);
                 foreach (var p in Players.Values)
                     p.Write(_w);
@@ -454,6 +462,8 @@ namespace NormalGolfMultiplayer.Net
 
                 Plugin.Log.LogInfo($"{player.Name} left ({info.Reason})");
                 PlayerLeft?.Invoke(player);
+                if (ActiveTurnId == id)
+                    AdvanceTurn(id);
                 return;
             }
 
@@ -556,6 +566,7 @@ namespace NormalGolfMultiplayer.Net
                     Begin(Msg.Shot, from);
                     shot.Write(_w);
                     _net.SendToAll(_w, DeliveryMethod.ReliableOrdered, peer);
+                    AdvanceTurn(from);
                     break;
                 }
                 case Msg.Holed:
@@ -601,6 +612,7 @@ namespace NormalGolfMultiplayer.Net
                 case Msg.Welcome:
                 {
                     var me = PlayerInfo.Read(r);
+                    byte activeTurn = r.GetByte();
                     LocalId = me.Id;
                     LocalInfo = me;
                     Players.Clear();
@@ -620,6 +632,7 @@ namespace NormalGolfMultiplayer.Net
                     OnSessionBegan();
                     foreach (var p in others)
                         PlayerJoined?.Invoke(p);
+                    SetActiveTurn(Players.ContainsKey(activeTurn) ? activeTurn : LocalId);
                     break;
                 }
                 case Msg.PlayerJoined:
@@ -672,7 +685,37 @@ namespace NormalGolfMultiplayer.Net
                     if (id != LocalId)
                         ChatReceived?.Invoke(id, Protocol.Clean(r.GetString(Protocol.MaxChatLength * 2), Protocol.MaxChatLength));
                     break;
+                case Msg.Turn:
+                {
+                    byte activeTurn = r.GetByte();
+                    if (Players.ContainsKey(activeTurn))
+                        SetActiveTurn(activeTurn);
+                    break;
+                }
             }
+        }
+
+        private void SetActiveTurn(byte id)
+        {
+            if (ActiveTurnId == id)
+                return;
+            ActiveTurnId = id;
+            TurnChanged?.Invoke(id);
+        }
+
+        /// <summary>The host keeps the displayed shot order consistent for every peer.</summary>
+        private void AdvanceTurn(byte after)
+        {
+            if (!IsHost || Players.Count == 0)
+                return;
+            var order = Players.Keys.OrderBy(id => id).ToArray();
+            byte next = order.FirstOrDefault(id => id > after);
+            if (next == 0)
+                next = order[0];
+            SetActiveTurn(next);
+            Begin(Msg.Turn, Protocol.HostId);
+            _w.Put(next);
+            _net.SendToAll(_w, DeliveryMethod.ReliableOrdered);
         }
 
         // ------------------------------------------------------------------ helpers

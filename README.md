@@ -45,9 +45,11 @@ What that means in practice:
 | **Follow every ball** | Each player's ball flies with a trail in their colour and a name marker so you can spot where it landed |
 | **Front Nine scoreboard** | Everyone's card side by side: hole, par, and a row per player, with penalties counted the way the game counts them |
 | **Chat & player list** | In-game chat, ping, distances, and a "Go to" button to teleport next to a friend |
+| **Shot order** | The HUD and multiplayer menu show whose turn is next; the host advances it after every shot |
 
 Everyone keeps their own save, story progress and money — this adds people to your world, it doesn't merge saves.
 Other players and their balls never collide with you, so nobody can ruin your shot.
+The shot order is a guide for taking turns with friends. It does not block anyone from swinging.
 
 <p align="center">
   <img src="screenshots/03_remote_player_golf_stance.png" width="49%" alt="A player lining up a shot">

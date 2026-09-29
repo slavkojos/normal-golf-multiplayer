@@ -30,6 +30,10 @@ In a session:
          button that teleports you next to another player (while walking)
   F9     show/hide the scoreboard as an overlay while you play
 
+The multiplayer HUD and F8 player list show whose shot is next. The host keeps
+this shot order in sync and it advances after each shot. It is a guide for
+friends taking turns; anyone can still swing at any time.
+
 FRONT NINE SCOREBOARD
 ---------------------
 In Play Nine, everyone's card is shown side by side: hole, par, then a row per
