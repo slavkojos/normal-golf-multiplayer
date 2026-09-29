@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1
+
+* Sized the F8 window to the game viewport and gave its scroll area the available height, including at smaller resolutions.
+* Made the chat box fit narrow screens. Added a Chat button in connected sessions and clarified that chat becomes available after hosting or joining.
+* Protocol remains v3, so v0.3.1 can play with v0.3.0.
+
 ## v0.3.0
 
 * Source-only release: an installable Windows package could not be built in this workspace without the game assemblies.

@@ -22,6 +22,8 @@ namespace NormalGolfMultiplayer.UI
         public static bool CapturingInput => _instance != null && (_instance._menuOpen || _instance._chatOpen);
 
         private const float WindowWidth = 560f;
+        private const float WindowHeight = 720f;
+        private const float WindowChromeHeight = 144f;
         private const int ChatHistory = 40;
         private static readonly Color Accent = new Color(0.46f, 0.91f, 0.72f);
         private static readonly Color ErrorColor = new Color(1f, 0.49f, 0.46f);
@@ -34,7 +36,6 @@ namespace NormalGolfMultiplayer.UI
         private string _chatText = "";
         private Rect _windowRect = new Rect(40f, 90f, WindowWidth, 10f);
         private Vector2 _menuScroll;
-        private float _viewportHeight;
         private bool _menuPlaced;
 
         private string _nameField;
@@ -148,14 +149,23 @@ namespace NormalGolfMultiplayer.UI
                     _menuOpen = !_menuOpen;
                 else if (!_chatOpen && kb[ModConfig.ScoreboardKey.Value].wasPressedThisFrame)
                     _scoreboardOpen = !_scoreboardOpen;
-                else if (!_menuOpen && !_chatOpen && NetSession.Instance.InSession && kb[ModConfig.ChatKey.Value].wasPressedThisFrame)
+                else if (!_menuOpen && !_chatOpen && kb[ModConfig.ChatKey.Value].wasPressedThisFrame)
                 {
-                    _chatOpen = true;
-                    _chatText = "";
-                    _chatOpenedFrame = Time.frameCount;
+                    if (NetSession.Instance.InSession)
+                        OpenChat();
+                    else
+                        Toast("Host or join a game to chat", Muted);
                 }
             }
             UpdateInputCapture();
+        }
+
+        private void OpenChat()
+        {
+            _menuOpen = false;
+            _chatOpen = true;
+            _chatText = "";
+            _chatOpenedFrame = Time.frameCount;
         }
 
         private void UpdateInputCapture()
@@ -203,7 +213,6 @@ namespace NormalGolfMultiplayer.UI
             GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
             float w = Screen.width / scale;
             float h = Screen.height / scale;
-            _viewportHeight = h;
             var overlayRows = _scoreboardOpen && !_menuOpen ? CollectScoreRows(NetSession.Instance) : null;
 
             if (!_menuOpen && (overlayRows == null || overlayRows.Count == 0))
@@ -217,16 +226,18 @@ namespace NormalGolfMultiplayer.UI
 
             if (_menuOpen)
             {
-                _windowRect.width = Mathf.Min(WindowWidth, w - 24f);
+                _windowRect.width = Mathf.Min(WindowWidth, Mathf.Max(1f, w - 24f));
+                _windowRect.height = Mathf.Min(WindowHeight, Mathf.Max(1f, h - 24f));
                 if (!_menuPlaced)
                 {
                     _windowRect.x = Mathf.Max(12f, (w - _windowRect.width) * 0.5f);
-                    _windowRect.y = Mathf.Max(12f, (h - 700f) * 0.5f);
+                    _windowRect.y = Mathf.Max(12f, (h - _windowRect.height) * 0.5f);
                     _menuPlaced = true;
                 }
-                _windowRect = GUILayout.Window(0x4E474D50, _windowRect, DrawWindow, GUIContent.none, _window);
-                _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, w - _windowRect.width);
+                _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, Mathf.Max(0f, w - _windowRect.width));
                 _windowRect.y = Mathf.Clamp(_windowRect.y, 0f, Mathf.Max(0f, h - _windowRect.height));
+                _windowRect = GUILayout.Window(0x4E474D50, _windowRect, DrawWindow, GUIContent.none, _window,
+                    GUILayout.Width(_windowRect.width), GUILayout.Height(_windowRect.height));
             }
         }
 
@@ -323,9 +334,10 @@ namespace NormalGolfMultiplayer.UI
                 return;
             }
 
-            GUI.Box(new Rect(16f, screenH - 190f, 720f, 36f), GUIContent.none, _window);
+            float chatWidth = Mathf.Max(40f, Mathf.Min(720f, Screen.width / Mathf.Max(1f, Screen.height / 1080f) - 32f));
+            GUI.Box(new Rect(16f, screenH - 190f, chatWidth, 36f), GUIContent.none, _window);
             GUI.SetNextControlName("ngmp_chat");
-            _chatText = GUI.TextField(new Rect(24f, screenH - 185f, 704f, 26f), _chatText, Protocol.MaxChatLength, _field);
+            _chatText = GUI.TextField(new Rect(24f, screenH - 185f, chatWidth - 16f, 26f), _chatText, Protocol.MaxChatLength, _field);
             GUI.FocusControl("ngmp_chat");
         }
 
@@ -339,12 +351,15 @@ namespace NormalGolfMultiplayer.UI
             GUILayout.Label("Multiplayer", _title);
             GUILayout.EndVertical();
             GUILayout.FlexibleSpace();
+            if (s.InSession && GUILayout.Button("Chat", _button, GUILayout.Width(70f), GUILayout.Height(30f)))
+                OpenChat();
             if (GUILayout.Button("Close  ×", _button, GUILayout.Width(88f), GUILayout.Height(30f)))
                 _menuOpen = false;
             GUILayout.EndHorizontal();
             GUILayout.Space(12f);
 
-            _menuScroll = GUILayout.BeginScrollView(_menuScroll, false, false, GUILayout.MaxHeight(Mathf.Max(200f, _viewportHeight - 160f)));
+            _menuScroll = GUILayout.BeginScrollView(_menuScroll, false, false,
+                GUILayout.Height(Mathf.Max(1f, _windowRect.height - WindowChromeHeight)));
             GUILayout.BeginVertical(_card);
             SectionHeading("YOUR GOLFER", "Choose how friends see you");
             DrawIdentity(s);
@@ -388,7 +403,8 @@ namespace NormalGolfMultiplayer.UI
             }
             GUILayout.EndScrollView();
             GUILayout.Space(10f);
-            GUILayout.Label($"{ModConfig.MenuKey.Value} menu   ·   {ModConfig.ChatKey.Value} chat   ·   {ModConfig.ScoreboardKey.Value} scores      v{Plugin.Version}", _small);
+            string chatHint = s.InSession ? $"{ModConfig.ChatKey.Value} chat (close menu)" : "Host or join to chat";
+            GUILayout.Label($"{ModConfig.MenuKey.Value} menu   ·   {chatHint}   ·   {ModConfig.ScoreboardKey.Value} scores      v{Plugin.Version}", _small);
 
             GUI.DragWindow(new Rect(0, 0, 10000, 56));
         }

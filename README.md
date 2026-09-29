@@ -6,7 +6,7 @@ no accounts, no servers, no launcher.
 
 ![Two players on the course](screenshots/01_players_see_each_other.png)
 
-**[Latest source release](../../releases/latest)** · build required · unofficial fan mod · public domain
+**[Latest Windows release](../../releases/latest)** · unofficial fan mod · public domain
 
 ---
 
@@ -58,12 +58,11 @@ The shot order is a guide for taking turns with friends. It does not block anyon
 
 ## Install
 
-The v0.3.0 release contains source code only. To install this version, build and package it on a Windows PC with
-Normal Golf Game and BepInEx 5 installed, as described in [Building from source](#building-from-source). Then:
+Download `NormalGolfMultiplayer-v0.3.1.zip` from the [latest release](../../releases/latest). Then:
 
 1. **Find the game folder.** In Steam: right-click Normal Golf Game → Manage → Browse local files, then open
    the **`Normal`** folder inside it — the one containing `Normal Golf Game.exe`.
-2. **Extract the zip produced by `package.ps1` into that folder**, so `winhttp.dll` sits right next to `Normal Golf Game.exe`.
+2. **Extract the zip into that folder**, so `winhttp.dll` sits right next to `Normal Golf Game.exe`.
 3. **Start the game from Steam** as usual, and press **F8**.
 
 The packaged zip contains the mod plus [BepInEx](https://github.com/BepInEx/BepInEx), the loader that runs it.
@@ -118,6 +117,8 @@ updating once they finish the ninth — everyone plays their own round at their 
 All of these are rebindable in `BepInEx\config\normalgolf.multiplayer.cfg`, which also holds your name, colour,
 port, password, max players, name tags, remote sounds and the interpolation delay. The file appears after the
 first launch.
+
+Chat is available after you host or join a session. Close the F8 menu before pressing **T**, or use its **Chat** button.
 
 ## FAQ
 
