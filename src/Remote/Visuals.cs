@@ -17,6 +17,7 @@ namespace NormalGolfMultiplayer.Remote
         public static int Layer { get; private set; } = 0;
 
         private static readonly Dictionary<PrimitiveType, Mesh> Meshes = new Dictionary<PrimitiveType, Mesh>();
+        private static readonly Dictionary<string, Mesh> ProfileMeshes = new Dictionary<string, Mesh>();
         private static readonly Dictionary<Color, Material> LitCache = new Dictionary<Color, Material>();
         private static readonly Dictionary<string, AudioClip> Clips = new Dictionary<string, AudioClip>();
         private static Material _baseLit;
@@ -26,6 +27,7 @@ namespace NormalGolfMultiplayer.Remote
         public static readonly Color Pants = new Color(0.24f, 0.25f, 0.30f);
         public static readonly Color Shoes = new Color(0.93f, 0.93f, 0.90f);
         public static readonly Color Dark = new Color(0.08f, 0.08f, 0.1f);
+        public static readonly Color Hair = new Color(0.16f, 0.12f, 0.095f);
         public static readonly Color Steel = new Color(0.78f, 0.79f, 0.82f);
 
         /// <summary>Call on each course load: materials are cloned from scene objects that only exist there.</summary>
@@ -80,6 +82,56 @@ namespace NormalGolfMultiplayer.Remote
             return mesh;
         }
 
+        /// <summary>A smooth, elliptical profile for clothing. Each ring is (height, half-width, half-depth, depth offset).</summary>
+        public static Mesh ProfileMesh(string name, params Vector4[] rings)
+        {
+            if (ProfileMeshes.TryGetValue(name, out var cached) && cached != null)
+                return cached;
+
+            const int sides = 16;
+            var vertices = new Vector3[rings.Length * sides + 2];
+            var triangles = new int[(rings.Length - 1) * sides * 6 + sides * 6];
+            for (int i = 0; i < rings.Length; i++)
+            {
+                Vector4 ring = rings[i];
+                for (int j = 0; j < sides; j++)
+                {
+                    float angle = j * Mathf.PI * 2f / sides;
+                    vertices[i * sides + j] = new Vector3(
+                        Mathf.Cos(angle) * ring.y, ring.x, Mathf.Sin(angle) * ring.z + ring.w);
+                }
+            }
+            int bottom = rings.Length * sides;
+            int top = bottom + 1;
+            vertices[bottom] = new Vector3(0f, rings[0].x, rings[0].w);
+            vertices[top] = new Vector3(0f, rings[rings.Length - 1].x, rings[rings.Length - 1].w);
+
+            int t = 0;
+            for (int i = 0; i < rings.Length - 1; i++)
+                for (int j = 0; j < sides; j++)
+                {
+                    int a = i * sides + j;
+                    int d = i * sides + (j + 1) % sides;
+                    int b = (i + 1) * sides + j;
+                    int c = (i + 1) * sides + (j + 1) % sides;
+                    triangles[t++] = a; triangles[t++] = b; triangles[t++] = c;
+                    triangles[t++] = a; triangles[t++] = c; triangles[t++] = d;
+                }
+            for (int j = 0; j < sides; j++)
+            {
+                int next = (j + 1) % sides;
+                triangles[t++] = bottom; triangles[t++] = j; triangles[t++] = next;
+                triangles[t++] = top; triangles[t++] = (rings.Length - 1) * sides + next;
+                triangles[t++] = (rings.Length - 1) * sides + j;
+            }
+
+            var mesh = new Mesh { name = "NGMP_" + name, vertices = vertices, triangles = triangles };
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            ProfileMeshes[name] = mesh;
+            return mesh;
+        }
+
         public static Material Lit(Color c)
         {
             if (LitCache.TryGetValue(c, out var m) && m != null)
@@ -95,13 +147,17 @@ namespace NormalGolfMultiplayer.Remote
         /// <summary>A mesh part with no collider, so it can never touch the player, the ball or raycasts.</summary>
         public static Transform Part(string name, PrimitiveType type, Transform parent, Vector3 pos, Vector3 scale, Color color,
             Quaternion? rot = null, bool shadows = true)
+            => MeshPart(name, GetMesh(type), parent, pos, scale, color, rot, shadows);
+
+        public static Transform MeshPart(string name, Mesh mesh, Transform parent, Vector3 pos, Vector3 scale, Color color,
+            Quaternion? rot = null, bool shadows = true)
         {
             var go = new GameObject(name) { layer = Layer };
             go.transform.SetParent(parent, false);
             go.transform.localPosition = pos;
             go.transform.localRotation = rot ?? Quaternion.identity;
             go.transform.localScale = scale;
-            go.AddComponent<MeshFilter>().sharedMesh = GetMesh(type);
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var r = go.AddComponent<MeshRenderer>();
             r.sharedMaterial = Lit(color);
             r.shadowCastingMode = shadows ? ShadowCastingMode.On : ShadowCastingMode.Off;

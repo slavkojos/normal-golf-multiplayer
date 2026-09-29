@@ -17,7 +17,7 @@ src/
   Game/ScoreTracker.cs       Mirrors the local Front Nine round (the game's LMUGC system) and broadcasts it
   Game/GamePatches.cs        Harmony hooks (see below)
   Remote/SnapshotBuffer.cs   Per-player interpolation buffer with clock-offset estimation
-  Remote/RemotePlayerView.cs Primitive-built golfer avatar, animation, remote ball + trail + labels
+  Remote/RemotePlayerView.cs Golfer avatar, animation, remote ball + trail + labels
   Remote/RemoteWorld.cs      Owns remote players across scene loads; per-camera label billboarding
   Remote/Visuals.cs          Materials/meshes/fonts/sounds borrowed from the game's own assets
   UI/MultiplayerUI.cs        IMGUI menu (F8), scoreboard (F9), HUD, toasts, chat (T)
@@ -61,8 +61,8 @@ one feature with a warning in the log instead of stopping the whole mod from loa
 ## Things the game does that shaped the design
 
 * **There is no player model.** The hands and the golfer are FMV video clips rendered to textures, so a remote player
-  had to be built from scratch: `RemotePlayerView` assembles a small golfer out of primitives and clones the ball's
-  URP/Lit material (cloning a material the game already renders guarantees the shader variant exists in the build).
+  had to be built from scratch: `RemotePlayerView` assembles a golfer from shared shaped meshes and primitives, then
+  clones the ball's URP/Lit material (which guarantees the shader variant exists in the build).
 * **Pose comes from two different places.** Walking uses the ECM2 `Character` (`MoveAndHitController.m_fpsCharacter`).
   Golfing disables that object entirely and positions `m_golferHolder` instead, with the ball at the holder's local
   +X (0.79), so a golfing avatar stands at the holder and faces holder yaw + 90°.

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.2
+
+* Reshaped remote golfers with tapered clothing, more natural face and cap proportions, and detailed shoes and hands.
+* Replaced the crouch squash with bent knees and level feet.
+* Kept protocol v3; players on v0.3.1 can still join the same session.
+
 ## v0.3.1
 
 * Sized the F8 window to the game viewport and gave its scroll area the available height, including at smaller resolutions.

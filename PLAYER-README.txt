@@ -13,7 +13,7 @@ INSTALL
    right next to "Normal Golf Game.exe".
 3. Start the game from Steam as usual.
 
-Everyone who plays together needs the same version of the mod.
+Everyone who plays together needs a compatible protocol version of the mod.
 
 PLAYING TOGETHER
 ----------------

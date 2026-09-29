@@ -14,17 +14,16 @@ no accounts, no servers, no launcher.
 
 Being upfront about it, because you deserve to know what you're installing:
 
-**Every line of this mod was written by Claude (Anthropic's Claude Opus 5), running in Claude Code.** That
-includes reverse-engineering the game, the networking, the player avatars, the UI, the scoreboard, these docs,
-and the automated in-game testing. A human (the repo owner) directed the work, made the decisions, played it,
-and confirmed it works — but did not hand-write the code.
+**This mod is AI-written.** Claude (Anthropic's Claude Opus 5) created the original implementation in Claude Code,
+including the reverse engineering, networking, avatars, UI, scoreboard, docs, and automated in-game tests.
+Later updates were made with OpenAI Codex. The repo owner directs the work and makes the release decisions.
 
 What that means in practice:
 
 * **Read the code before you trust it.** It's small, commented, and public domain. Nothing here phones home,
   collects anything, or touches files outside the game's own folders. The only network traffic is UDP between
   you and the people you choose to connect to.
-* **It was genuinely tested, not just generated.** It was driven through real sessions with two and three
+* **The original implementation was tested in-game.** It was driven through real sessions with two and three
   copies of the game running side by side, plus normal play by the owner. See [what was tested](#whats-been-tested).
 * **Bugs are expected**, especially on setups unlike the ones it was tested on. Please
   [open an issue](../../issues) rather than assuming it's you.
@@ -58,7 +57,7 @@ The shot order is a guide for taking turns with friends. It does not block anyon
 
 ## Install
 
-Download `NormalGolfMultiplayer-v0.3.1.zip` from the [latest release](../../releases/latest). Then:
+Download `NormalGolfMultiplayer-v0.3.2.zip` from the [latest release](../../releases/latest). Then:
 
 1. **Find the game folder.** In Steam: right-click Normal Golf Game → Manage → Browse local files, then open
    the **`Normal`** folder inside it — the one containing `Normal Golf Game.exe`.
@@ -66,7 +65,7 @@ Download `NormalGolfMultiplayer-v0.3.1.zip` from the [latest release](../../rele
 3. **Start the game from Steam** as usual, and press **F8**.
 
 The packaged zip contains the mod plus [BepInEx](https://github.com/BepInEx/BepInEx), the loader that runs it.
-Everyone playing together needs **the same version of the mod**; mismatched versions are refused with a message
+Everyone playing together needs **a compatible protocol version**; incompatible versions are refused with a message
 telling you to update.
 
 **Uninstalling:** delete `winhttp.dll` from that folder to switch all mods off, or also delete `BepInEx`,
