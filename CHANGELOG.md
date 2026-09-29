@@ -2,6 +2,7 @@
 
 ## v0.3.0
 
+* Source-only release: an installable Windows package could not be built in this workspace without the game assemblies.
 * Redesigned the multiplayer menu with clearer sections, player cards, compact connection details and a scrollable layout for smaller screens.
 * Added a visible shot order in the HUD and player list. The host keeps the current turn in sync, including for players who join mid-session, and advances it after each shot or when the active player leaves. Shot order is a guide; it does not block anyone from playing.
 * **Protocol v3 — everyone in a session needs v0.3.0.** Older clients are refused with a message telling them to update.
