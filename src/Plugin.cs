@@ -14,7 +14,7 @@ namespace NormalGolfMultiplayer
     {
         public const string Guid = "normalgolf.multiplayer";
         public const string Name = "Normal Golf Multiplayer";
-        public const string Version = "0.3.2";
+        public const string Version = "0.4.0";
 
         internal static ManualLogSource Log;
         internal static Plugin Instance;
@@ -41,6 +41,7 @@ namespace NormalGolfMultiplayer
             host.AddComponent<NetSession>();
             host.AddComponent<ScoreTracker>();
             host.AddComponent<RemoteWorld>();
+            host.AddComponent<BallTurnIndicators>();
             host.AddComponent<MultiplayerUI>();
             host.AddComponent<DevTools>();
 

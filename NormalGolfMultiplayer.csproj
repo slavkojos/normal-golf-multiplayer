@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>NormalGolfMultiplayer</AssemblyName>
     <RootNamespace>NormalGolfMultiplayer</RootNamespace>
-    <Version>0.3.2</Version>
+    <Version>0.4.0</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -50,6 +50,12 @@
     <Reference Include="$(ManagedDir)Unity.TextMeshPro.dll" Private="false" />
     <Reference Include="$(ManagedDir)Unity.RenderPipelines.Core.Runtime.dll" Private="false" />
     <Reference Include="$(ManagedDir)Unity.RenderPipelines.Universal.Runtime.dll" Private="false" />
+  </ItemGroup>
+
+  <!-- dist/ holds release staging output; never compile its stray sources. -->
+  <ItemGroup>
+    <Compile Remove="dist\**" />
+    <Compile Remove="tests\**" />
   </ItemGroup>
 
   <Target Name="DeployPlugin" AfterTargets="Build">

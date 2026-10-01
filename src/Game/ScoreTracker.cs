@@ -49,6 +49,7 @@ namespace NormalGolfMultiplayer.Game
         {
             _pars = null;
             _under = _par = _over = _none = null;
+            LocalPlayer.ResetCups(); // the cached cups belong to the previous course
             if (scene.name == LocalPlayer.CourseScene)
                 ImportRoundInProgress();
         }
@@ -136,6 +137,10 @@ namespace NormalGolfMultiplayer.Game
             if (Time.unscaledTime < _nextPoll)
                 return;
             _nextPoll = Time.unscaledTime + 0.25f;
+
+            // LMUGC may resume its saved round after sceneLoaded fired.
+            if (!Local.HasRound && LocalPlayer.InWorld && SaveManager.instance != null && SaveManager.instance.m_run.isInLMUGC)
+                ImportRoundInProgress();
 
             if (Local.Active)
             {

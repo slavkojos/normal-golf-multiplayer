@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Reflection;
 using HarmonyLib;
 using NormalGolfMultiplayer.Net;
@@ -10,6 +11,8 @@ namespace NormalGolfMultiplayer.Game
     internal static class GamePatches
     {
         private static float _lastHoledTime = -10f;
+        private static bool _launchAuthorized;
+        private static int _launchGeneration;
 
         /// <summary>
         /// Patches are applied one by one so a game update that renames a single method only disables
@@ -18,17 +21,28 @@ namespace NormalGolfMultiplayer.Game
         public static void Apply(Harmony harmony)
         {
             Patch(harmony, typeof(HitManager), nameof(HitManager.ResetBall), postfix: nameof(AfterResetBall));
+            Patch(harmony, typeof(HitManager), nameof(HitManager.HitBall), prefix: nameof(BeforeBallLaunch));
             Patch(harmony, typeof(HitSequeneceManager), nameof(HitSequeneceManager.HitSequence), prefix: nameof(BeforeHitSequence));
+            Patch(harmony, typeof(HitSequeneceManager), nameof(HitSequeneceManager.CompleteSequence),
+                prefix: nameof(BeforeShotComplete), postfix: nameof(AfterShotComplete));
             Patch(harmony, typeof(HitSequeneceManager), nameof(HitSequeneceManager.ShowBallInHoleFeedback), prefix: nameof(BeforeHoleFeedback));
+            Patch(harmony, typeof(Ball), nameof(Ball.KillBall), postfix: nameof(AfterBallKilled));
             Patch(harmony, typeof(LMUGC), nameof(LMUGC.StartChallenge), postfix: nameof(AfterStartChallenge));
             Patch(harmony, typeof(LMUGC), nameof(LMUGC.CompleteHole), prefix: nameof(BeforeCompleteHole));
             Patch(harmony, typeof(SaveManager), nameof(SaveManager.AddScoreToCard), postfix: nameof(AfterAddScoreToCard));
             Patch(harmony, typeof(ClubSwing), "Update", prefix: nameof(SkipWhileUiCapturesInput));
             Patch(harmony, typeof(ClubSwingFPS), "Update", prefix: nameof(SkipWhileUiCapturesInput));
+            Patch(harmony, typeof(ClubSwing), "DetectShot", prefix: nameof(CanDetectShot));
+            Patch(harmony, typeof(ClubSwingFPS), "DetectShot", prefix: nameof(CanDetectShot));
+            Patch(harmony, typeof(ClubSwing), "HandleShot", prefix: nameof(CanDetectShot));
             Patch(harmony, typeof(HitSequeneceManager), "RotateCamera", prefix: nameof(SkipWhileUiCapturesInput));
+            Patch(harmony, typeof(WindPanel), "Update", prefix: nameof(WindSync.BeforeVisuals), patchType: typeof(WindSync));
+            Patch(harmony, typeof(WindPanel), "LateUpdate", prefix: nameof(WindSync.BeforeLateUpdate),
+                postfix: nameof(WindSync.AfterLateUpdate), patchType: typeof(WindSync));
+            Patch(harmony, typeof(Ball), "FixedUpdate", prefix: nameof(WindSync.BeforePhysics), patchType: typeof(WindSync));
         }
 
-        private static void Patch(Harmony harmony, Type type, string method, string prefix = null, string postfix = null)
+        private static void Patch(Harmony harmony, Type type, string method, string prefix = null, string postfix = null, Type patchType = null)
         {
             try
             {
@@ -36,8 +50,8 @@ namespace NormalGolfMultiplayer.Game
                 if (target == null)
                     throw new MissingMethodException(type.Name, method);
                 harmony.Patch(target,
-                    prefix: prefix != null ? new HarmonyMethod(typeof(GamePatches), prefix) : null,
-                    postfix: postfix != null ? new HarmonyMethod(typeof(GamePatches), postfix) : null);
+                    prefix: prefix != null ? new HarmonyMethod(patchType ?? typeof(GamePatches), prefix) : null,
+                    postfix: postfix != null ? new HarmonyMethod(patchType ?? typeof(GamePatches), postfix) : null);
             }
             catch (Exception e)
             {
@@ -49,27 +63,83 @@ namespace NormalGolfMultiplayer.Game
         private static void AfterResetBall()
         {
             LocalPlayer.BallEpoch++;
+            LocalPlayer.ShotPending = false;
+            _launchAuthorized = false;
+            ShotFeedback.Cancel();
         }
 
         /// <summary>HitSequence is the coroutine every real swing starts (ClubSwing.HandleShot).</summary>
-        private static void BeforeHitSequence(float power, bool isMiss, ShotType shot)
+        private static bool BeforeHitSequence(float power, bool isMiss, ShotType shot, ref IEnumerator __result)
         {
-            if (isMiss || NetSession.Instance == null)
-                return;
-            NetSession.Instance.SendShot(new ShotEvent
+            var session = NetSession.Instance;
+            if (session != null && !session.CanLocalShoot)
+            {
+                session.NotifyShotBlocked();
+                __result = EmptyShot(); // StartCoroutine must receive a valid, harmless enumerator.
+                return false;
+            }
+            if (isMiss || session == null)
+                return true;
+            _launchAuthorized = session.InSession;
+            _launchGeneration = session.SessionGeneration;
+            LocalPlayer.ShotPending = true;
+            uint shotId = session.SendShot(new ShotEvent
             {
                 Club = LocalPlayer.CurrentClub(),
                 Power = power,
                 ShotType = (byte)shot,
             });
+            ShotFeedback.Queue(shotId);
+            return true;
+        }
+
+        private static IEnumerator EmptyShot() { yield break; }
+        private static bool CanDetectShot() => !MultiplayerUI.CapturingInput &&
+            (NetSession.Instance == null || NetSession.Instance.CanLocalShoot);
+        private static bool BeforeBallLaunch(bool isMiss, ShotType shot)
+        {
+            var session = NetSession.Instance;
+            if (isMiss || session == null || session.Mode == SessionMode.Offline)
+                return true;
+            // The original coroutine launches after its video delay. A granted shot remains valid
+            // after the host awards the next tee turn, but cannot authorize a second launch.
+            if (_launchAuthorized && LocalPlayer.ShotPending && session.InSession && _launchGeneration == session.SessionGeneration)
+            {
+                _launchAuthorized = false;
+                ShotFeedback.Launch(shot);
+                return true;
+            }
+            session.NotifyShotBlocked();
+            return false;
+        }
+
+        private static void BeforeShotComplete(Ball ballThatSentMessage) => ShotFeedback.Finish(ballThatSentMessage);
+
+        private static void AfterBallKilled(Ball __instance)
+        {
+            if (NetSession.Instance != null && NetSession.Instance.InSession)
+                NetSession.Instance.StartCoroutine(ShotFeedback.FinishKilledBall(__instance));
+        }
+
+        private static void AfterShotComplete(Ball ballThatSentMessage)
+        {
+            if (HitManager.instance != null && HitManager.instance.m_ball == ballThatSentMessage)
+            {
+                LocalPlayer.ShotPending = false;
+                _launchAuthorized = false;
+            }
         }
 
         /// <summary>Every "ball went in a hole" path (story holes, Play Nine, LMUGC) reports through here.</summary>
         private static void BeforeHoleFeedback(int par, bool showAnyway)
         {
+            if (HitManager.instance != null)
+                ShotFeedback.Finish(HitManager.instance.m_ball, holed: true);
             if (NetSession.Instance == null || Time.unscaledTime - _lastHoledTime < 2f)
                 return;
             _lastHoledTime = Time.unscaledTime;
+            LocalPlayer.ShotPending = false;
+            _launchAuthorized = false;
 
             int strokes = 0;
             try

@@ -29,7 +29,7 @@ namespace NormalGolfMultiplayer.Remote
     /// so the avatar is a lightweight golfer built from shared meshes, coloured with the player's colour.
     /// Root sits at the feet and faces +Z.
     /// </summary>
-    internal class RemotePlayerView : MonoBehaviour
+    internal partial class RemotePlayerView : MonoBehaviour
     {
         private const float BallOffsetFromGolfer = 0.79f; // MoveAndHitController.m_ballPosition.localPosition.x
 
@@ -43,6 +43,7 @@ namespace NormalGolfMultiplayer.Remote
 
         // ball
         private Transform _ballRoot, _ballMesh;
+        private Transform _turnRing;
         private MeshRenderer _ballRenderer;
         private TrailRenderer _trail;
         private TextMeshPro _ballLabel;
@@ -82,122 +83,7 @@ namespace NormalGolfMultiplayer.Remote
 
         // ------------------------------------------------------------------ construction
 
-        private void BuildAvatar()
-        {
-            var S = PrimitiveType.Sphere;
-            var Y = PrimitiveType.Cylinder;
-            var B = PrimitiveType.Cube;
-            Color white = Color.white;
-
-            // The shaped clothing meshes are shared by every avatar. The broad shoulders, tapered waist,
-            // narrowing trousers and separate shoe silhouettes read as a person even at course distance.
-            Mesh thigh = Visuals.ProfileMesh("TrouserThigh",
-                new Vector4(-0.45f, 0.105f, 0.10f, 0f),
-                new Vector4(-0.22f, 0.13f, 0.125f, 0f),
-                new Vector4(0.01f, 0.135f, 0.13f, 0f));
-            Mesh shin = Visuals.ProfileMesh("TrouserShin",
-                new Vector4(-0.43f, 0.095f, 0.085f, 0f),
-                new Vector4(-0.27f, 0.10f, 0.09f, 0f),
-                new Vector4(-0.02f, 0.115f, 0.11f, 0f));
-            Mesh hips = Visuals.ProfileMesh("Hips",
-                new Vector4(-0.035f, 0.24f, 0.15f, 0f),
-                new Vector4(0.10f, 0.25f, 0.16f, 0f),
-                new Vector4(0.16f, 0.235f, 0.15f, 0f));
-            Mesh shirt = Visuals.ProfileMesh("PoloShirt",
-                new Vector4(0.10f, 0.235f, 0.16f, 0f),
-                new Vector4(0.28f, 0.255f, 0.17f, 0f),
-                new Vector4(0.50f, 0.31f, 0.19f, 0f),
-                new Vector4(0.68f, 0.32f, 0.175f, 0f),
-                new Vector4(0.79f, 0.205f, 0.135f, 0f));
-            Mesh sleeve = Visuals.ProfileMesh("PoloSleeve",
-                new Vector4(-0.28f, 0.105f, 0.105f, 0f),
-                new Vector4(-0.19f, 0.125f, 0.12f, 0f),
-                new Vector4(0.02f, 0.15f, 0.15f, 0f));
-            Mesh forearm = Visuals.ProfileMesh("Forearm",
-                new Vector4(-0.68f, 0.065f, 0.065f, 0f),
-                new Vector4(-0.48f, 0.072f, 0.075f, 0f),
-                new Vector4(-0.30f, 0.09f, 0.09f, 0f),
-                new Vector4(-0.25f, 0.085f, 0.085f, 0f));
-
-            _scaler = Visuals.Pivot("Scaler", transform, Vector3.zero);
-
-            _legL = Visuals.Pivot("LegL", _scaler, new Vector3(-0.14f, 0.95f, 0f));
-            _kneeL = BuildLeg(_legL, thigh, shin, out _ankleL);
-            _legR = Visuals.Pivot("LegR", _scaler, new Vector3(0.14f, 0.95f, 0f));
-            _kneeR = BuildLeg(_legR, thigh, shin, out _ankleR);
-
-            _torso = Visuals.Pivot("Torso", _scaler, new Vector3(0f, 0.95f, 0f));
-            Visuals.MeshPart("TrousersWaist", hips, _torso, Vector3.zero, Vector3.one, Visuals.Pants);
-            Colored(Visuals.MeshPart("PoloShirt", shirt, _torso, Vector3.zero, Vector3.one, white));
-            Visuals.Part("Belt", Y, _torso, new Vector3(0f, 0.11f, 0f), new Vector3(0.47f, 0.018f, 0.32f), Visuals.Dark);
-            Visuals.Part("Buckle", B, _torso, new Vector3(0f, 0.11f, 0.163f), new Vector3(0.065f, 0.035f, 0.013f), Visuals.Steel);
-            Visuals.Part("CollarL", B, _torso, new Vector3(-0.105f, 0.754f, 0.134f), new Vector3(0.14f, 0.065f, 0.035f), Visuals.Shoes,
-                Quaternion.Euler(0f, 0f, -25f));
-            Visuals.Part("CollarR", B, _torso, new Vector3(0.105f, 0.754f, 0.134f), new Vector3(0.14f, 0.065f, 0.035f), Visuals.Shoes,
-                Quaternion.Euler(0f, 0f, 25f));
-            Visuals.Part("Placket", B, _torso, new Vector3(0f, 0.67f, 0.176f), new Vector3(0.025f, 0.12f, 0.009f), Visuals.Shoes, shadows: false);
-
-            _head = Visuals.Pivot("Head", _torso, new Vector3(0f, 0.82f, 0f));
-            Visuals.Part("Neck", Y, _head, new Vector3(0f, 0.045f, 0f), new Vector3(0.115f, 0.065f, 0.115f), Visuals.Skin);
-            Visuals.Part("Face", S, _head, new Vector3(0f, 0.275f, 0f), new Vector3(0.31f, 0.39f, 0.32f), Visuals.Skin);
-            Visuals.Part("EarL", S, _head, new Vector3(-0.16f, 0.25f, -0.005f), new Vector3(0.064f, 0.105f, 0.075f), Visuals.Skin);
-            Visuals.Part("EarR", S, _head, new Vector3(0.16f, 0.25f, -0.005f), new Vector3(0.064f, 0.105f, 0.075f), Visuals.Skin);
-            Visuals.Part("Nose", S, _head, new Vector3(0f, 0.215f, 0.157f), new Vector3(0.055f, 0.078f, 0.09f), Visuals.Skin);
-            Visuals.Part("EyeWhiteL", S, _head, new Vector3(-0.072f, 0.29f, 0.142f), new Vector3(0.049f, 0.03f, 0.027f), Visuals.Shoes, shadows: false);
-            Visuals.Part("EyeWhiteR", S, _head, new Vector3(0.072f, 0.29f, 0.142f), new Vector3(0.049f, 0.03f, 0.027f), Visuals.Shoes, shadows: false);
-            Visuals.Part("IrisL", S, _head, new Vector3(-0.067f, 0.29f, 0.159f), new Vector3(0.021f, 0.022f, 0.012f), Visuals.Dark, shadows: false);
-            Visuals.Part("IrisR", S, _head, new Vector3(0.067f, 0.29f, 0.159f), new Vector3(0.021f, 0.022f, 0.012f), Visuals.Dark, shadows: false);
-            Visuals.Part("BrowL", B, _head, new Vector3(-0.075f, 0.344f, 0.139f), new Vector3(0.07f, 0.012f, 0.013f), Visuals.Hair, shadows: false);
-            Visuals.Part("BrowR", B, _head, new Vector3(0.075f, 0.344f, 0.139f), new Vector3(0.07f, 0.012f, 0.013f), Visuals.Hair, shadows: false);
-            Visuals.Part("Mouth", B, _head, new Vector3(0f, 0.137f, 0.119f), new Vector3(0.073f, 0.008f, 0.012f), Visuals.Hair, shadows: false);
-            Visuals.Part("Hair", S, _head, new Vector3(0f, 0.408f, -0.023f), new Vector3(0.312f, 0.15f, 0.295f), Visuals.Hair);
-            Colored(Visuals.Part("Cap", S, _head, new Vector3(0f, 0.477f, -0.005f), new Vector3(0.35f, 0.145f, 0.355f), white));
-            DarkColored(Visuals.Part("Visor", S, _head, new Vector3(0f, 0.421f, 0.177f), new Vector3(0.36f, 0.033f, 0.23f), white));
-
-            _swing = Visuals.Pivot("Swing", _torso, new Vector3(0f, 0.72f, 0.02f));
-            _armL = BuildArm("ArmL", -0.31f, glove: true, sleeve, forearm, out _);
-            _armR = BuildArm("ArmR", 0.31f, glove: false, sleeve, forearm, out _handR);
-            _hands = Visuals.Pivot("Hands", _swing, new Vector3(0f, -0.62f, 0.3f));
-
-            _club = Visuals.Pivot("Club", _hands, Vector3.zero);
-            Visuals.Part("Grip", Y, _club, new Vector3(0f, -0.08f, 0f), new Vector3(0.036f, 0.08f, 0.036f), Visuals.Dark);
-            Visuals.Part("Shaft", Y, _club, new Vector3(0f, -0.5f, 0f), new Vector3(0.022f, 0.5f, 0.022f), Visuals.Steel);
-            Visuals.Part("Clubhead", S, _club, new Vector3(0f, -1f, 0.045f), new Vector3(0.07f, 0.062f, 0.16f), Visuals.Steel);
-            _clubParent = _hands;
-
-            _nameTag = Visuals.Label("NameTag", transform, 3f, white);
-            _nameTag.transform.localPosition = new Vector3(0f, 2.5f, 0f);
-        }
-
-        private static Transform BuildLeg(Transform leg, Mesh thigh, Mesh shin, out Transform ankle)
-        {
-            Visuals.MeshPart("Thigh", thigh, leg, Vector3.zero, Vector3.one, Visuals.Pants);
-            var knee = Visuals.Pivot("Knee", leg, new Vector3(0f, -0.44f, 0f));
-            Visuals.MeshPart("Shin", shin, knee, Vector3.zero, Vector3.one, Visuals.Pants);
-            ankle = Visuals.Pivot("Ankle", knee, new Vector3(0f, -0.46f, 0f));
-            Visuals.Part("ShoeSole", PrimitiveType.Cube, ankle, new Vector3(0f, -0.036f, 0.073f),
-                new Vector3(0.205f, 0.027f, 0.315f), Visuals.Dark);
-            Visuals.Part("ShoeUpper", PrimitiveType.Sphere, ankle, new Vector3(0f, 0f, 0.075f),
-                new Vector3(0.198f, 0.11f, 0.305f), Visuals.Shoes);
-            Visuals.Part("ShoeHeel", PrimitiveType.Cube, ankle, new Vector3(0f, 0.015f, -0.075f),
-                new Vector3(0.185f, 0.082f, 0.10f), Visuals.Shoes);
-            return knee;
-        }
-
-        private Transform BuildArm(string name, float x, bool glove, Mesh sleeve, Mesh forearm, out Transform hand)
-        {
-            var arm = Visuals.Pivot(name, _swing, new Vector3(x, 0f, 0f));
-            Visuals.MeshPart("Forearm", forearm, arm, Vector3.zero, Vector3.one, Visuals.Skin);
-            Colored(Visuals.MeshPart("Sleeve", sleeve, arm, Vector3.zero, Vector3.one, Color.white));
-            DarkColored(Visuals.Part("SleeveCuff", PrimitiveType.Cylinder, arm, new Vector3(0f, -0.275f, 0f),
-                new Vector3(0.108f, 0.012f, 0.108f), Color.white));
-            hand = Visuals.Pivot("Hand", arm, new Vector3(0f, -0.7f, 0f));
-            Visuals.Part("Palm", PrimitiveType.Sphere, hand, Vector3.zero,
-                new Vector3(0.108f, 0.12f, 0.095f), glove ? Visuals.Shoes : Visuals.Skin);
-            Visuals.Part("Thumb", PrimitiveType.Sphere, hand, new Vector3(x < 0f ? 0.055f : -0.055f, -0.025f, 0.042f),
-                new Vector3(0.042f, 0.071f, 0.05f), glove ? Visuals.Shoes : Visuals.Skin);
-            return arm;
-        }
+        private void BuildAvatar() => BuildDetailedAvatar();
 
         private void BuildBall(Transform parent)
         {
@@ -237,6 +123,7 @@ namespace NormalGolfMultiplayer.Remote
             _trail.emitting = false;
 
             _ballLabel = Visuals.Label("BallLabel", _ballRoot, 1.6f, Color.white);
+            _turnRing = BallTurnIndicators.CreateRing(_ballRoot);
         }
 
         private void Colored(Transform part) => _colorParts.Add(part.GetComponent<MeshRenderer>());
@@ -253,8 +140,8 @@ namespace NormalGolfMultiplayer.Remote
             _shownLook = info.BallLook;
 
             Color c = info.Color;
-            var mat = Visuals.Lit(c);
-            var dark = Visuals.Lit(c * 0.6f + new Color(0f, 0f, 0f, 0.4f));
+            var mat = Visuals.DetailedMaterial(c, Visuals.Surface.Cloth);
+            var dark = Visuals.DetailedMaterial(Color.Lerp(c, new Color(0.05f, 0.06f, 0.06f), 0.22f), Visuals.Surface.Cloth);
             foreach (var r in _colorParts) r.sharedMaterial = mat;
             foreach (var r in _darkColorParts) r.sharedMaterial = dark;
 
@@ -316,7 +203,7 @@ namespace NormalGolfMultiplayer.Remote
             Animate(now, dt, pitch, golfing);
             _nameTag.gameObject.SetActive(ModConfig.ShowNameTags.Value);
             // Leaning over the ball (or crouching) lowers the head, so the tag follows it down.
-            float tagHeight = Mathf.Lerp(2.5f, 2.3f, _golfBlend) - 0.23f * _crouch;
+            float tagHeight = Mathf.Lerp(2.22f, 2.02f, _golfBlend) - 0.23f * _crouch;
             _nameTag.transform.localPosition = new Vector3(0f, tagHeight, 0f);
 
             UpdateBall(a, b, t, dt);
@@ -341,8 +228,9 @@ namespace NormalGolfMultiplayer.Remote
             _ankleR.localRotation = Quaternion.Euler(legSwing - kneeBend, 0f, 0f);
             float bob = Mathf.Abs(Mathf.Cos(_walkPhase)) * 0.05f * walk * (1f - _crouch);
             float hipHeight = Mathf.Lerp(0.95f, 0.73f, _crouch) + bob;
-            _legL.localPosition = new Vector3(-0.14f, hipHeight, 0f);
-            _legR.localPosition = new Vector3(0.14f, hipHeight, 0f);
+            float stance = Mathf.Lerp(0.115f, 0.16f, _golfBlend);
+            _legL.localPosition = new Vector3(-stance, hipHeight, 0f);
+            _legR.localPosition = new Vector3(stance, hipHeight, 0f);
             _torso.localPosition = new Vector3(0f, hipHeight, 0f);
 
             float swing = 0f;
@@ -360,12 +248,13 @@ namespace NormalGolfMultiplayer.Remote
             if (_golfBlend > 0.5f)
             {
                 SetClubParent(_hands);
-                AimArm(_armL, _hands.localPosition + new Vector3(-0.03f, 0.02f, 0f));
-                AimArm(_armR, _hands.localPosition + new Vector3(0.03f, -0.04f, 0.02f));
+                AimArm(_armL, _elbowL, _hands.localPosition + new Vector3(-0.023f, 0.035f, 0f), -1f);
+                AimArm(_armR, _elbowR, _hands.localPosition + new Vector3(0.023f, -0.018f, 0.015f), 1f);
                 // Address pose: shaft from the hands to the ball, face square to the target (golfer's left).
                 Vector3 ballTarget = transform.TransformPoint(new Vector3(0f, 0.04f, BallOffsetFromGolfer));
                 Vector3 dir = (ballTarget - _hands.position).normalized;
                 _club.rotation = Quaternion.LookRotation(-transform.right, -dir);
+                _club.localScale = Vector3.one * Vector3.Distance(ballTarget, _hands.position);
                 // The swing rotates arms+club around the (leaned) chest axis; positive = backswing to the right.
                 _swing.localRotation = Quaternion.Euler(0f, 0f, swing);
             }
@@ -375,6 +264,9 @@ namespace NormalGolfMultiplayer.Remote
                 float armSwing = Mathf.Sin(_walkPhase) * 32f * walk;
                 _armL.localRotation = Quaternion.Euler(-armSwing, 0f, -5f);
                 _armR.localRotation = Quaternion.Euler(armSwing, 0f, 5f);
+                _elbowL.localRotation = Quaternion.Euler(-12f - Mathf.Max(0f, armSwing) * 0.35f, 0f, 0f);
+                _elbowR.localRotation = Quaternion.Euler(-12f - Mathf.Max(0f, -armSwing) * 0.35f, 0f, 0f);
+                _club.localScale = Vector3.one;
                 _club.localRotation = Quaternion.Euler(-35f, 0f, 0f);
             }
         }
@@ -388,11 +280,20 @@ namespace NormalGolfMultiplayer.Remote
             _clubParent = parent;
         }
 
-        private static void AimArm(Transform arm, Vector3 targetInParent)
+        private static void AimArm(Transform arm, Transform elbow, Vector3 targetInParent, float side)
         {
-            Vector3 dir = targetInParent - arm.localPosition;
-            if (dir.sqrMagnitude > 1e-6f)
-                arm.localRotation = Quaternion.FromToRotation(Vector3.down, dir);
+            Vector3 delta = targetInParent - arm.localPosition;
+            float distance = Mathf.Clamp(delta.magnitude, 0.08f, UpperArmLength + ForearmLength - 0.001f);
+            Vector3 direction = delta.normalized;
+            // Solve two rigid arm segments with an outward elbow pole. Hands reach the grip
+            // without scaling the arm or losing the silhouette of the elbow.
+            Vector3 pole = Vector3.ProjectOnPlane(new Vector3(side * 0.7f, -0.25f, -1f), direction).normalized;
+            float along = (UpperArmLength * UpperArmLength - ForearmLength * ForearmLength + distance * distance) / (2f * distance);
+            float bend = Mathf.Sqrt(Mathf.Max(0f, UpperArmLength * UpperArmLength - along * along));
+            Vector3 upper = direction * along + pole * bend;
+            arm.localRotation = Quaternion.FromToRotation(Vector3.down, upper.normalized);
+            Vector3 lower = direction * distance - upper;
+            elbow.localRotation = Quaternion.FromToRotation(Vector3.down, Quaternion.Inverse(arm.localRotation) * lower.normalized);
         }
 
         private const float SwingDuration = 2.6f;
@@ -434,6 +335,7 @@ namespace NormalGolfMultiplayer.Remote
             SetBallVisible(visible);
             if (!visible)
             {
+                _turnRing.gameObject.SetActive(false);
                 _ballPlaced = false;
                 return;
             }
@@ -468,6 +370,9 @@ namespace NormalGolfMultiplayer.Remote
             // Right at its owner's feet the name tag already says whose ball it is.
             bool nearOwner = (target - transform.position).sqrMagnitude < 16f;
             _ballLabel.gameObject.SetActive(ModConfig.ShowBallLabels.Value && !nearOwner);
+            BallTurnIndicators.UpdateRing(_turnRing, target, !b.Has(StateFlags.BallMoving) && !b.ShotInProgress, _player.Info.Id);
+            _ballLabel.color = BallTurnIndicators.ShowMarkers && !BallTurnIndicators.IsActive(_player.Info.Id)
+                ? BallTurnIndicators.WaitingColor : Color.Lerp(_player.Info.Color, Color.white, 0.5f);
         }
 
         private void SetVisible(bool visible)

@@ -19,11 +19,14 @@ namespace NormalGolfMultiplayer.Remote
         private static readonly Dictionary<PrimitiveType, Mesh> Meshes = new Dictionary<PrimitiveType, Mesh>();
         private static readonly Dictionary<string, Mesh> ProfileMeshes = new Dictionary<string, Mesh>();
         private static readonly Dictionary<Color, Material> LitCache = new Dictionary<Color, Material>();
+        private static readonly Dictionary<string, Material> SurfaceCache = new Dictionary<string, Material>();
+        private static Texture2D _clothWeave;
+        private static readonly Dictionary<string, Mesh> AvatarBatches = new Dictionary<string, Mesh>();
         private static readonly Dictionary<string, AudioClip> Clips = new Dictionary<string, AudioClip>();
         private static Material _baseLit;
         private static TMP_FontAsset _font;
 
-        public static readonly Color Skin = new Color(0.96f, 0.78f, 0.63f);
+        public static readonly Color Skin = new Color(0.78f, 0.60f, 0.47f);
         public static readonly Color Pants = new Color(0.24f, 0.25f, 0.30f);
         public static readonly Color Shoes = new Color(0.93f, 0.93f, 0.90f);
         public static readonly Color Dark = new Color(0.08f, 0.08f, 0.1f);
@@ -88,8 +91,28 @@ namespace NormalGolfMultiplayer.Remote
             if (ProfileMeshes.TryGetValue(name, out var cached) && cached != null)
                 return cached;
 
-            const int sides = 16;
+            // Subdivide the authored silhouette smoothly instead of exposing straight ring-to-ring facets.
+            var smooth = new List<Vector4>();
+            for (int i = 0; i < rings.Length - 1; i++)
+            {
+                Vector4 p0 = rings[Mathf.Max(0, i - 1)], p1 = rings[i];
+                Vector4 p2 = rings[i + 1], p3 = rings[Mathf.Min(rings.Length - 1, i + 2)];
+                for (int step = 0; step < 3; step++)
+                {
+                    float u = step / 3f;
+                    Vector4 r = 0.5f * ((2f * p1) + (-p0 + p2) * u +
+                        (2f * p0 - 5f * p1 + 4f * p2 - p3) * u * u +
+                        (-p0 + 3f * p1 - 3f * p2 + p3) * u * u * u);
+                    r.x = Mathf.Lerp(p1.x, p2.x, u);
+                    r.y = Mathf.Max(0.002f, r.y); r.z = Mathf.Max(0.002f, r.z);
+                    smooth.Add(r);
+                }
+            }
+            smooth.Add(rings[rings.Length - 1]);
+            rings = smooth.ToArray();
+            const int sides = 32;
             var vertices = new Vector3[rings.Length * sides + 2];
+            var uv = new Vector2[vertices.Length];
             var triangles = new int[(rings.Length - 1) * sides * 6 + sides * 6];
             for (int i = 0; i < rings.Length; i++)
             {
@@ -99,6 +122,7 @@ namespace NormalGolfMultiplayer.Remote
                     float angle = j * Mathf.PI * 2f / sides;
                     vertices[i * sides + j] = new Vector3(
                         Mathf.Cos(angle) * ring.y, ring.x, Mathf.Sin(angle) * ring.z + ring.w);
+                    uv[i * sides + j] = new Vector2(j / (float)sides, i / (float)(rings.Length - 1));
                 }
             }
             int bottom = rings.Length * sides;
@@ -125,7 +149,7 @@ namespace NormalGolfMultiplayer.Remote
                 triangles[t++] = (rings.Length - 1) * sides + j;
             }
 
-            var mesh = new Mesh { name = "NGMP_" + name, vertices = vertices, triangles = triangles };
+            var mesh = new Mesh { name = "NGMP_" + name, vertices = vertices, triangles = triangles, uv = uv };
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
             ProfileMeshes[name] = mesh;
@@ -142,6 +166,145 @@ namespace NormalGolfMultiplayer.Remote
                 m.SetColor("_BaseColor", c);
             LitCache[c] = m;
             return m;
+        }
+
+        public enum Surface { Cloth, Skin, Leather, Metal }
+        public static Mesh CollarMesh(int side)
+        {
+            string key = "GolferCollar" + side;
+            if (ProfileMeshes.TryGetValue(key, out var cached) && cached != null) return cached;
+            Vector3 a = new Vector3(side * 0.035f, 0.637f, 0.079f);
+            Vector3 b = new Vector3(side * 0.125f, 0.602f, 0.095f);
+            Vector3 c = new Vector3(side * 0.071f, 0.531f, 0.154f);
+            if (Vector3.Cross(b - a, c - a).z < 0f) { var swap = b; b = c; c = swap; }
+            Vector3 thickness = new Vector3(0f, 0f, -0.006f);
+            var mesh = new Mesh { name = "NGMP_Collar", vertices = new[] { a, b, c, a + thickness, b + thickness, c + thickness },
+                triangles = new[] { 0,1,2, 5,4,3, 0,3,4, 0,4,1, 1,4,5, 1,5,2, 2,5,3, 2,3,0 },
+                uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.zero, Vector2.right, Vector2.up } };
+            mesh.RecalculateNormals(); mesh.RecalculateBounds(); ProfileMeshes[key] = mesh;
+            return mesh;
+        }
+        public static Material DetailedMaterial(Color color, Surface surface)
+        {
+            string key = ColorUtility.ToHtmlStringRGBA(color) + surface;
+            if (SurfaceCache.TryGetValue(key, out var cached) && cached != null) return cached;
+            var material = new Material(Lit(color)) { name = "NGMP_" + key };
+            float smoothness = surface == Surface.Metal ? 0.72f : surface == Surface.Skin ? 0.34f : surface == Surface.Leather ? 0.3f : 0.16f;
+            if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", smoothness);
+            if (material.HasProperty("_SpecColor")) material.SetColor("_SpecColor", surface == Surface.Metal ? new Color(0.65f, 0.65f, 0.65f) : new Color(0.05f, 0.05f, 0.05f));
+            if (surface == Surface.Cloth)
+            {
+                if (_clothWeave == null)
+                {
+                    _clothWeave = new Texture2D(64, 64, TextureFormat.RGB24, false) { name = "NGMP_PiqueWeave", wrapMode = TextureWrapMode.Repeat, filterMode = FilterMode.Bilinear };
+                    var pixels = new Color[64 * 64];
+                    for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++)
+                    {
+                        float shade = 0.95f + 0.025f * Mathf.Sin(x * Mathf.PI * 0.5f) * Mathf.Cos(y * Mathf.PI * 0.5f);
+                        pixels[y * 64 + x] = new Color(shade, shade, shade);
+                    }
+                    _clothWeave.SetPixels(pixels); _clothWeave.Apply(false, true);
+                }
+                if (material.HasProperty("_BaseMap")) { material.SetTexture("_BaseMap", _clothWeave); material.SetTextureScale("_BaseMap", new Vector2(5f, 5f)); }
+            }
+            SurfaceCache[key] = material;
+            return material;
+        }
+
+        public static Transform Detail(string name, Mesh mesh, Transform parent, Vector3 pos, Vector3 scale, Color color,
+            Surface surface = Surface.Cloth, Quaternion? rotation = null)
+        {
+            var part = MeshPart(name, mesh, parent, pos, scale, color, rotation);
+            part.GetComponent<MeshRenderer>().sharedMaterial = DetailedMaterial(color, surface);
+            return part;
+        }
+
+        public static void SkinnedLimb(string name, Mesh mesh, Transform upper, Transform joint, float split, Color color, Surface surface)
+        {
+            if (mesh.boneWeights.Length == 0)
+            {
+                var weights = new BoneWeight[mesh.vertexCount];
+                var vertices = mesh.vertices;
+                for (int i = 0; i < weights.Length; i++)
+                {
+                    float blend = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((split + 0.075f - vertices[i].y) / 0.15f));
+                    weights[i] = new BoneWeight { boneIndex0 = 0, weight0 = 1f - blend, boneIndex1 = 1, weight1 = blend };
+                }
+                mesh.boneWeights = weights;
+                mesh.bindposes = new[] { Matrix4x4.identity,
+                    Matrix4x4.TRS(new Vector3(0f, split, 0f), Quaternion.identity, Vector3.one).inverse };
+            }
+            var go = new GameObject(name) { layer = Layer };
+            go.transform.SetParent(upper, false);
+            var renderer = go.AddComponent<SkinnedMeshRenderer>();
+            renderer.sharedMesh = mesh;
+            renderer.sharedMaterial = DetailedMaterial(color, surface);
+            renderer.bones = new[] { upper, joint };
+            renderer.rootBone = upper;
+            renderer.quality = SkinQuality.Bone2;
+            renderer.localBounds = new Bounds(mesh.bounds.center, mesh.bounds.size + Vector3.one * 1.2f);
+            renderer.shadowCastingMode = ShadowCastingMode.On;
+            renderer.receiveShadows = true;
+        }
+
+        /// <summary>A narrow seam, lace or piping strip between two local points.</summary>
+        public static Transform Strip(string name, Transform parent, Vector3 a, Vector3 b, float radius, Color color)
+        {
+            Vector3 delta = b - a;
+            return Part(name, PrimitiveType.Cylinder, parent, (a + b) * 0.5f,
+                new Vector3(radius * 2f, delta.magnitude * 0.5f, radius * 2f), color,
+                Quaternion.FromToRotation(Vector3.up, delta), shadows: false);
+        }
+
+        /// <summary>Merge details on each rigid bone by material, keeping the joints and colour groups separate.</summary>
+        public static void OptimizeAvatar(Transform root, List<MeshRenderer> colored, List<MeshRenderer> darkColored)
+        {
+            foreach (var parent in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (parent == null) continue;
+                var groups = new Dictionary<(Material, int, ShadowCastingMode), List<MeshFilter>>();
+                for (int i = 0; i < parent.childCount; i++)
+                {
+                    var filter = parent.GetChild(i).GetComponent<MeshFilter>();
+                    var renderer = filter != null ? filter.GetComponent<MeshRenderer>() : null;
+                    if (renderer == null) continue;
+                    int role = colored.Contains(renderer) ? 1 : darkColored.Contains(renderer) ? 2 : 0;
+                    var key = (renderer.sharedMaterial, role, renderer.shadowCastingMode);
+                    if (!groups.TryGetValue(key, out var parts)) groups[key] = parts = new List<MeshFilter>();
+                    parts.Add(filter);
+                }
+                foreach (var group in groups)
+                {
+                    if (group.Value.Count < 2) continue;
+                    string path = parent.name;
+                    for (var ancestor = parent.parent; ancestor != null && ancestor != root.parent; ancestor = ancestor.parent)
+                        path = ancestor.name + "/" + path;
+                    string key = path + "/" + group.Key.Item1.name + "/" + group.Key.Item2 + "/" + group.Key.Item3;
+                    if (!AvatarBatches.TryGetValue(key, out var mesh) || mesh == null)
+                    {
+                        var parts = new CombineInstance[group.Value.Count];
+                        for (int i = 0; i < parts.Length; i++)
+                        {
+                            var part = group.Value[i];
+                            parts[i] = new CombineInstance { mesh = part.sharedMesh,
+                                transform = Matrix4x4.TRS(part.transform.localPosition, part.transform.localRotation, part.transform.localScale) };
+                        }
+                        mesh = new Mesh { name = "NGMP_GolferBatch_" + parent.name };
+                        mesh.CombineMeshes(parts, true, true);
+                        mesh.RecalculateBounds();
+                        AvatarBatches[key] = mesh;
+                    }
+                    var merged = MeshPart("Details", mesh, parent, Vector3.zero, Vector3.one, Color.white);
+                    var renderer = merged.GetComponent<MeshRenderer>();
+                    renderer.sharedMaterial = group.Key.Item1;
+                    renderer.shadowCastingMode = group.Key.Item3;
+                    if (group.Key.Item2 == 1) colored.Add(renderer);
+                    if (group.Key.Item2 == 2) darkColored.Add(renderer);
+                    foreach (var part in group.Value) Object.DestroyImmediate(part.gameObject);
+                }
+            }
+            colored.RemoveAll(renderer => renderer == null);
+            darkColored.RemoveAll(renderer => renderer == null);
         }
 
         /// <summary>A mesh part with no collider, so it can never touch the player, the ball or raycasts.</summary>

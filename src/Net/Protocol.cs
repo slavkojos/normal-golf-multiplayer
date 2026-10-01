@@ -9,7 +9,7 @@ namespace NormalGolfMultiplayer.Net
     {
         public const string Magic = "NGMP";
         /// <summary>Bump whenever the wire format changes; mismatched peers are refused with a clear message.</summary>
-        public const ushort Version = 3;
+        public const ushort Version = 8;
         public const int DefaultPort = 7777;
         public const int MaxNameLength = 20;
         public const int MaxChatLength = 120;
@@ -46,7 +46,28 @@ namespace NormalGolfMultiplayer.Net
         Holed = 7,        // both ways: [strokes][par]
         Chat = 8,         // both ways: [text]
         Score = 9,        // both ways: [ScoreCard] — the sender's Front Nine round
-        Turn = 10,        // host -> clients: [activePlayerId]
+        Turn = 10,        // host -> clients: [activePlayerId][hasFlag][flagPosition]
+        Wind = 11,        // host -> clients: authoritative wind and physics/UI settings
+        ShotResult = 12,  // reliable completed shot, matched to an accepted Shot ID
+    }
+
+    internal struct WindState
+    {
+        public ushort Seq;
+        public float X, Y, ForceMultiplier, CalmSeconds;
+        public bool Locked;
+        public bool Valid => Finite(X) && Finite(Y) && Finite(ForceMultiplier) &&
+                             Finite(CalmSeconds) && ForceMultiplier >= 0f && CalmSeconds >= 0f;
+        private static bool Finite(float v) => !float.IsNaN(v) && !float.IsInfinity(v) && Math.Abs(v) < 100000f;
+        public void Write(NetDataWriter w)
+        {
+            w.Put(Seq); w.Put(X); w.Put(Y); w.Put(ForceMultiplier); w.Put(CalmSeconds); w.Put(Locked);
+        }
+        public static WindState Read(NetDataReader r) => new WindState
+        {
+            Seq = r.GetUShort(), X = r.GetFloat(), Y = r.GetFloat(),
+            ForceMultiplier = r.GetFloat(), CalmSeconds = r.GetFloat(), Locked = r.GetBool(),
+        };
     }
 
     [Flags]
@@ -60,6 +81,7 @@ namespace NormalGolfMultiplayer.Net
         BallTrail = 16,   // trail emitting: ball is in flight/rolling after a hit
         BallMoving = 32,  // rigidbody is simulating (not resting)
         PlayNine = 64,    // playing "Play Nine" rather than story mode
+        HoleKnown = 128,  // HolePos is the cup selected by the game's distance overlay
     }
 
     internal class PlayerInfo
@@ -93,7 +115,7 @@ namespace NormalGolfMultiplayer.Net
         public PlayerInfo Clone() => (PlayerInfo)MemberwiseClone();
     }
 
-    /// <summary>One network tick of a player's pose and ball. ~45 bytes.</summary>
+    /// <summary>One network tick of a player's pose, physical ball, current cup and shot lifecycle.</summary>
     internal struct PlayerState
     {
         public ushort Seq;
@@ -105,6 +127,8 @@ namespace NormalGolfMultiplayer.Net
         public byte Club;         // Clubs enum
         public Vector3 BallPos;
         public byte BallEpoch;    // bumps when the ball is teleported/reset, so receivers snap instead of sliding
+        public Vector3 HolePos;   // valid when HoleKnown; lets the host compare golfers on the same hole
+        public bool ShotInProgress; // includes the swing video before the rigidbody starts moving
 
         public bool Has(StateFlags f) => (Flags & f) != 0;
 
@@ -119,6 +143,8 @@ namespace NormalGolfMultiplayer.Net
             w.Put(Club);
             PutVec(w, BallPos);
             w.Put(BallEpoch);
+            PutVec(w, HolePos);
+            w.Put(ShotInProgress);
         }
 
         public static PlayerState Read(NetDataReader r)
@@ -134,6 +160,8 @@ namespace NormalGolfMultiplayer.Net
                 Club = r.GetByte(),
                 BallPos = GetVec(r),
                 BallEpoch = r.GetByte(),
+                HolePos = GetVec(r),
+                ShotInProgress = r.GetBool(),
             };
         }
 
@@ -242,19 +270,67 @@ namespace NormalGolfMultiplayer.Net
 
     internal struct ShotEvent
     {
+        public uint Id;
         public byte Club;
         public float Power;
         public byte ShotType;
+        public PlayerState State; // reliable pre-shot ball/cup snapshot; UDP may still contain the old hole
 
         public void Write(NetDataWriter w)
         {
+            w.Put(Id);
             w.Put(Club);
             w.Put(Power);
             w.Put(ShotType);
+            State.Write(w);
         }
 
         public static ShotEvent Read(NetDataReader r) =>
-            new ShotEvent { Club = r.GetByte(), Power = r.GetFloat(), ShotType = r.GetByte() };
+            new ShotEvent { Id = r.GetUInt(), Club = r.GetByte(), Power = r.GetFloat(), ShotType = r.GetByte(), State = PlayerState.Read(r) };
+    }
+
+    internal struct ShotResult
+    {
+        public uint Id;
+        public ushort Stroke;
+        public byte Contact, Shape; // game's ShotType and SpinType values
+        public float Distance, Remaining;
+        public bool HasHole, Holed;
+
+        public bool Valid => Id != 0 && Stroke > 0 && Stroke <= 1000 &&
+            (Contact == 1 || Contact == 2 || Contact == 4 || Contact == 8 || Contact == 16 || Contact == 64) &&
+            (Shape == 0 || Shape == 1 || Shape == 2 || Shape == 4 || Shape == 8 || Shape == 16) &&
+            ValidDistance(Distance) && ValidDistance(Remaining) && (!Holed || (HasHole && Remaining == 0f));
+        private static bool ValidDistance(float value) => !float.IsNaN(value) && !float.IsInfinity(value) && value >= 0f && value < 100000f;
+
+        public string Quality
+        {
+            get
+            {
+                string shape = Shape switch { 1 => "Straight", 2 => "Slice", 4 => "Hook", 8 => "Draw", 16 => "Fade", _ => "" };
+                string contact = Contact switch { 1 => "Topped", 2 => "Thin", 8 => "Fat", 16 => "Ground hit", 64 => "Perfect", _ => "" };
+                return contact.Length == 0 ? (shape.Length == 0 ? "Good" : shape) :
+                    shape.Length == 0 ? contact : contact + " · " + shape;
+            }
+        }
+
+        public string Describe(string playerName)
+        {
+            string distance = Distance.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+            string remaining = Remaining.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+            return $"{Protocol.Clean(playerName, Protocol.MaxNameLength)} · Stroke {Stroke}\n{Quality}\n{distance} m travelled · " +
+                (Holed ? "In the hole!" : HasHole ? $"{remaining} m to hole" : "Hole distance unavailable");
+        }
+
+        public void Write(NetDataWriter w)
+        {
+            w.Put(Id); w.Put(Stroke); w.Put(Contact); w.Put(Shape);
+            w.Put(Distance); w.Put(Remaining); w.Put(HasHole); w.Put(Holed);
+        }
+        public static ShotResult Read(NetDataReader r) => new ShotResult {
+            Id = r.GetUInt(), Stroke = r.GetUShort(), Contact = r.GetByte(), Shape = r.GetByte(),
+            Distance = r.GetFloat(), Remaining = r.GetFloat(), HasHole = r.GetBool(), Holed = r.GetBool(),
+        };
     }
 
     internal struct HoledEvent

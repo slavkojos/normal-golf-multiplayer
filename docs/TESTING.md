@@ -1,5 +1,8 @@
 # Testing
 
+The v0.4.0 release build, HUD clearance and ZIP checks are recorded in
+[release-0.4-validation.md](release-0.4-validation.md).
+
 The mod ships with the tooling that was used to build it: you can run two or three copies of the game on one PC
 and drive them from the outside, which is how every feature here was checked.
 
@@ -44,6 +47,9 @@ and logs the result to `BepInEx\LogOutput.log` (`.log.1` for the second copy, `.
 | Verb | |
 |---|---|
 | `state` | Local pose/ball/flags plus every remote player's, and cursor/input state |
+| `pin` | The cup of the hole in play, the ball, and the distance |
+| `uitree` | Dumps the mod's whole canvas (positions, texts, sprites) to `BepInEx/ngmp_debug/uitree_<profile>.txt` |
+| `holes` | The current Front Nine hole, its cup, and every golfer's ball distance to it (the inputs the shot order compares) |
 | `scores` | Local and remote Front Nine cards, and the course pars |
 | `buf ID` | Snapshot buffer for a player: contents, clock offset, render time |
 | `dump` | Full scene report: layers, every camera with culling mask, player/ball hierarchies, shaders, fonts |
@@ -56,11 +62,42 @@ and logs the result to `BepInEx\LogOutput.log` (`.log.1` for the second copy, `.
 
 ### Checking shot order
 
-With two copies connected, open F8 on both. Both should show the host first. Use `hit POWER` on the host, then
-`state` on both copies: `turn` should be the joining player's ID. Take a shot on the joining copy and check that
-both return to the host's ID. Joining during this sequence should show the current turn immediately; disconnecting
-the active player should move the indicator to the next connected player. The indicator is informational and does
-not stop an out-of-turn swing.
+The deterministic host regression suite runs the actual session and turn-order sources with engine services
+stubbed. Build the plugin into the local test folder first, then run:
+
+```powershell
+dotnet build NormalGolfMultiplayer.csproj -c Release -p:GameDir="PATH_TO_GAME" -p:PluginOutDir="bin/test-plugin/"
+dotnet restore tests/TurnOrder.Tests/TurnOrder.Tests.csproj --configfile tests/TurnOrder.Tests/NuGet.Config
+dotnet run --project tests/TurnOrder.Tests -c Release --no-restore
+```
+
+It covers opening shots, widely separated drives, consecutive turns, hole-outs, long flights,
+cup drift, reordered UDP samples, mid-round score import, round resets, invalid distances and stable ties.
+It also checks retakes without another swing, the video phase before ball motion, reliable shot snapshots
+and the UI's ball-to-flag calculation.
+Wind checks cover protocol round trips, sequence wrap, stale/invalid samples, host authority and session reset.
+Shot permission checks cover active/waiting golfers, the ball-settle wait, connecting/offline/solo sessions,
+duplicate swings and session generation resets. Live enforcement results are in [turn-lock-validation.md](turn-lock-validation.md).
+Live two-instance Unity Explorer results are recorded in [wind-sync-validation.md](wind-sync-validation.md).
+Tee-honour checks cover gross-score ranking, ties across successive holes, partial ties,
+round restarts, resumed scorecards, delayed score/tee arrivals, hidden balls, slow/loading
+golfers, disconnects and returning to farthest-ball order after all tee shots.
+Live two-instance checks are recorded in [tee-honours-validation.md](tee-honours-validation.md).
+Shot-result checks cover serialization, contact/shape labels, invalid metrics, duplicate and unmatched
+results, delivery after turn advancement, physical distance calculations, stroke capture, cup/kill
+callback order, resets and session changes. Live results are in [shot-notification-validation.md](shot-notification-validation.md).
+Rendering and real network delivery still require the game checks below.
+
+With two copies connected and both on the tee, `state` on both copies shows `turn=1` (the host). Use `hit POWER`
+on the host: the turn should move to the joining player's ID (everyone plays from the tee once). Take a shot on
+the joining copy too: once both balls rest, `state` should show the turn of whoever is farther from the pin
+(`holes` prints the cup in play and every golfer's distance to it), and that golfer keeps the turn while their ball stays farthest. Holing out
+drops a golfer from the order; when the group moves to the next hole the tee rotation starts again. Joining mid-
+round shows the current turn immediately; disconnecting the active player hands the turn on. The indicator is
+enforced: an out-of-turn swing leaves the ball and strokes unchanged. Green ground rings mark the active
+golfer and grey rings mark waiting golfers, including the game's local resume-ball particles. Check that
+an accepted swing still launches after the next tee turn is announced during its video delay, and that
+the local indicators return to their original appearance after leaving multiplayer.
 
 ## Cleaning up after testing
 

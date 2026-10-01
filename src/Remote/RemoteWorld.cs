@@ -32,6 +32,7 @@ namespace NormalGolfMultiplayer.Remote
             s.PlayerInfoChanged += OnPlayerInfoChanged;
             s.StateReceived += OnState;
             s.ShotReceived += OnShot;
+            s.ShotResultReceived += OnShotResult;
             s.HoledReceived += OnHoled;
             s.ScoreReceived += OnScore;
             RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
@@ -90,6 +91,12 @@ namespace NormalGolfMultiplayer.Remote
                 if (p.View != null && p.HasPose)
                     Visuals.PlayAt(Visuals.HitClipFor((Clubs)shot.Club, (ShotType)shot.ShotType), p.Position + Vector3.up, 0.9f);
             }));
+        }
+
+        private void OnShotResult(byte id, ShotResult result)
+        {
+            if (Players.TryGetValue(id, out var player))
+                MultiplayerUI.ShotToast(result.Describe(player.Info.Name), player.Info.Color);
         }
 
         private void OnHoled(byte id, HoledEvent holed)

@@ -31,6 +31,12 @@ namespace NormalGolfMultiplayer.Net
         public string Endpoint { get; private set; } = "";
         public PlayerInfo LocalInfo { get; private set; } = new PlayerInfo();
         public byte ActiveTurnId { get; private set; }
+        public Vector3 TurnHole { get; private set; }
+        public bool HasTurnHole { get; private set; }
+        public bool HasWind { get; private set; }
+        public WindState CurrentWind { get; private set; }
+        private float _nextWindSend;
+        private readonly Dictionary<byte, PlayerState> _latestStates = new Dictionary<byte, PlayerState>();
 
         /// <summary>Everyone in the session, including us.</summary>
         public readonly Dictionary<byte, PlayerInfo> Players = new Dictionary<byte, PlayerInfo>();
@@ -40,10 +46,19 @@ namespace NormalGolfMultiplayer.Net
         public event Action<PlayerInfo> PlayerInfoChanged;
         public event Action<byte, PlayerState> StateReceived;
         public event Action<byte, ShotEvent> ShotReceived;
+        public event Action<byte, ShotResult> ShotResultReceived;
+        private readonly Dictionary<byte, uint> _resultPending = new Dictionary<byte, uint>();
+        private uint _nextShotId;
         public event Action<byte, HoledEvent> HoledReceived;
         public event Action<byte, string> ChatReceived;
         public event Action<byte, ScoreCard> ScoreReceived;
         public event Action<byte> TurnChanged;
+        public event Action ShotBlocked;
+        public bool CanShoot(byte id) => Mode == SessionMode.Offline ||
+            (InSession && id != 0 && (Players.Count < 2 || ActiveTurnId == id));
+        public bool CanLocalShoot => CanShoot(LocalId) && (!InSession || !LocalPlayer.ShotPending);
+        public int SessionGeneration { get; private set; }
+        public void NotifyShotBlocked() => ShotBlocked?.Invoke();
         /// <summary>Raised with a human-readable reason when a session ends or a join fails.</summary>
         public event Action<string> SessionEnded;
         public event Action SessionStarted;
@@ -57,6 +72,25 @@ namespace NormalGolfMultiplayer.Net
         private readonly Dictionary<int, byte> _peerToPlayer = new Dictionary<int, byte>();
         private readonly Dictionary<byte, NetPeer> _playerToPeer = new Dictionary<byte, NetPeer>();
         private readonly Dictionary<byte, ChatLimiter> _chatLimits = new Dictionary<byte, ChatLimiter>();
+        private sealed class TurnPlayer
+        {
+            public PlayerState State;
+            public float UpdatedAt;
+            public bool HasState;
+            public Vector3 Hole;
+            public bool HasHole;
+            public int Shots;
+            public bool Holed;
+            public Vector3 PendingHole;
+            public float PendingHoleSince;
+            public ScoreCard Card;
+        }
+        private readonly Dictionary<byte, TurnPlayer> _turnPlayers = new Dictionary<byte, TurnPlayer>();
+        private byte _pendingShot;
+        private float _pendingShotAt;
+        private Vector3 _pendingHole;
+        private const float SameHoleDistanceSquared = 4f; // different samples of the same cup may vary slightly
+        private const float HoleSwitchDebounce = 1f; // a different cup must be reported this long, ball settled
         private EventBasedNetListener _listener;
         private NetManager _net;
         private NetPeer _server;
@@ -106,6 +140,12 @@ namespace NormalGolfMultiplayer.Net
             LocalId = Protocol.HostId;
             RefreshLocalInfo(includeName: true);
             Players.Clear();
+            _turnPlayers.Clear();
+            _latestStates.Clear();
+            HasTurnHole = false;
+            HasWind = false;
+            _nextWindSend = 0f;
+            _pendingShot = 0;
             Players[LocalId] = LocalInfo;
             SetActiveTurn(LocalId);
             Endpoint = $"port {port}";
@@ -185,6 +225,10 @@ namespace NormalGolfMultiplayer.Net
 
         private void OnSessionBegan()
         {
+            SessionGeneration++;
+            _resultPending.Clear();
+            _nextShotId = 0;
+            LocalPlayer.ShotPending = false;
             _timeBase = Time.realtimeSinceStartupAsDouble;
             // Keep sending/receiving when alt-tabbed, otherwise we'd freeze for everyone else.
             _prevRunInBackground = Application.runInBackground;
@@ -195,6 +239,9 @@ namespace NormalGolfMultiplayer.Net
 
         private void Shutdown(string reason)
         {
+            SessionGeneration++;
+            _resultPending.Clear();
+            LocalPlayer.ShotPending = false;
             bool wasActive = Mode != SessionMode.Offline;
 
             if (_net != null)
@@ -213,6 +260,11 @@ namespace NormalGolfMultiplayer.Net
             _peerToPlayer.Clear();
             _playerToPeer.Clear();
             _chatLimits.Clear();
+            _turnPlayers.Clear();
+            _latestStates.Clear();
+            HasTurnHole = false;
+            HasWind = false;
+            _pendingShot = 0;
 
             foreach (var p in Players.Values.Where(p => p.Id != LocalId).ToList())
                 PlayerLeft?.Invoke(p);
@@ -255,6 +307,13 @@ namespace NormalGolfMultiplayer.Net
                 _nextInfoCheck = now + 1f;
                 CheckLocalInfoChanged();
             }
+            if (IsHost && _pendingShot != 0)
+                FinishPendingShot(now);
+            // Re-evaluate against current balls, including a late tee arrival or a retake. Previously,
+            // a golfer excluded by a transient wrong cup stayed excluded until somebody shot again.
+            if (IsHost && _pendingShot == 0 && HasTurnHole &&
+                !(_turnPlayers.TryGetValue(ActiveTurnId, out var active) && active.State.ShotInProgress))
+                ChooseTurn(0, TurnHole, TurnHole);
         }
 
         private void SendLocalState()
@@ -262,6 +321,9 @@ namespace NormalGolfMultiplayer.Net
             PlayerState s = LocalPlayer.Capture();
             s.Seq = ++_seq;
             s.Time = SessionTime;
+            _latestStates[LocalId] = s;
+            if (IsHost)
+                TrackTurnState(LocalId, s);
             Begin(Msg.State, LocalId);
             s.Write(_w);
             SendFromLocal(DeliveryMethod.Unreliable);
@@ -296,15 +358,42 @@ namespace NormalGolfMultiplayer.Net
 
         // ------------------------------------------------------------------ outgoing events
 
-        public void SendShot(ShotEvent shot)
+        public uint SendShot(ShotEvent shot)
         {
-            if (!InSession)
-                return;
+            if (!InSession || !CanShoot(LocalId))
+                return 0;
+            shot.Id = ++_nextShotId;
+            if (shot.Id == 0) shot.Id = ++_nextShotId;
+            _resultPending[LocalId] = shot.Id;
+            shot.State = LocalPlayer.Capture();
+            shot.State.Seq = ++_seq;
+            shot.State.Time = SessionTime;
+            _latestStates[LocalId] = shot.State;
+            if (IsHost)
+                TrackTurnState(LocalId, shot.State);
             Begin(Msg.Shot, LocalId);
             shot.Write(_w);
             SendFromLocal(DeliveryMethod.ReliableOrdered);
             if (IsHost)
-                AdvanceTurn(LocalId);
+                AfterShot(LocalId);
+            return shot.Id;
+        }
+
+        public void SendShotResult(ShotResult result)
+        {
+            // The turn may already have moved on while this ball was in flight.
+            if (!InSession || !AcceptShotResult(LocalId, result)) return;
+            Begin(Msg.ShotResult, LocalId);
+            result.Write(_w);
+            SendFromLocal(DeliveryMethod.ReliableOrdered);
+        }
+
+        private bool AcceptShotResult(byte id, ShotResult result)
+        {
+            if (!Players.ContainsKey(id) || !result.Valid || !_resultPending.TryGetValue(id, out uint expected) || expected != result.Id)
+                return false;
+            _resultPending.Remove(id); // completion and hole feedback can both fire; publish once
+            return true;
         }
 
         public void SendHoled(HoledEvent holed)
@@ -314,12 +403,16 @@ namespace NormalGolfMultiplayer.Net
             Begin(Msg.Holed, LocalId);
             holed.Write(_w);
             SendFromLocal(DeliveryMethod.ReliableOrdered);
+            if (IsHost)
+                AfterHoled(LocalId);
         }
 
         public void SendScore(ScoreCard card)
         {
             if (!InSession)
                 return;
+            if (IsHost)
+                TrackTurnScore(LocalId, card);
             Begin(Msg.Score, LocalId);
             card.Write(_w);
             SendFromLocal(DeliveryMethod.ReliableOrdered);
@@ -349,6 +442,19 @@ namespace NormalGolfMultiplayer.Net
                 _net.SendToAll(_w, method);
             else
                 _server?.Send(_w, method);
+        }
+
+        public void PublishWind(WindState wind)
+        {
+            if (!IsHost || !wind.Valid || Time.unscaledTime < _nextWindSend)
+                return;
+            _nextWindSend = Time.unscaledTime + Protocol.SendInterval;
+            wind.Seq = (ushort)(CurrentWind.Seq + 1);
+            CurrentWind = wind;
+            HasWind = true;
+            Begin(Msg.Wind, Protocol.HostId);
+            wind.Write(_w);
+            _net.SendToAll(_w, DeliveryMethod.Unreliable);
         }
 
         // ------------------------------------------------------------------ LiteNetLib callbacks
@@ -423,10 +529,18 @@ namespace NormalGolfMultiplayer.Net
                 Begin(Msg.Welcome, Protocol.HostId);
                 info.Write(_w);
                 _w.Put(ActiveTurnId);
+                WriteTurnHole(_w);
                 _w.Put((byte)Players.Count);
                 foreach (var p in Players.Values)
                     p.Write(_w);
                 peer.Send(_w, DeliveryMethod.ReliableOrdered);
+
+                if (HasWind)
+                {
+                    Begin(Msg.Wind, Protocol.HostId);
+                    CurrentWind.Write(_w);
+                    peer.Send(_w, DeliveryMethod.ReliableOrdered);
+                }
 
                 Players[info.Id] = info;
 
@@ -453,6 +567,9 @@ namespace NormalGolfMultiplayer.Net
                 _peerToPlayer.Remove(peer.Id);
                 _playerToPeer.Remove(id);
                 _chatLimits.Remove(id);
+                _turnPlayers.TryGetValue(id, out var departingTurn);
+                _turnPlayers.Remove(id);
+                _resultPending.Remove(id);
                 if (!Players.TryGetValue(id, out var player))
                     return; // disconnected before finishing the handshake
                 Players.Remove(id);
@@ -462,8 +579,16 @@ namespace NormalGolfMultiplayer.Net
 
                 Plugin.Log.LogInfo($"{player.Name} left ({info.Reason})");
                 PlayerLeft?.Invoke(player);
-                if (ActiveTurnId == id)
-                    AdvanceTurn(id);
+                bool wasPending = _pendingShot == id;
+                if (wasPending)
+                    _pendingShot = 0;
+                if (ActiveTurnId == id || wasPending)
+                {
+                    if (departingTurn != null && departingTurn.HasHole && departingTurn.HasState)
+                        ChooseTurn(id, departingTurn.Hole, departingTurn.State.BallPos);
+                    else if (ActiveTurnId == id)
+                        PublishTurn(0);
+                }
                 return;
             }
 
@@ -522,7 +647,7 @@ namespace NormalGolfMultiplayer.Net
                 byte id = reader.GetByte();
                 if (IsHost)
                     HandleOnHost(peer, msg, reader);
-                else
+                else if (peer == _server)
                     HandleOnClient(msg, id, reader);
             }
             catch (Exception e)
@@ -541,6 +666,8 @@ namespace NormalGolfMultiplayer.Net
                 case Msg.State:
                 {
                     var s = PlayerState.Read(r);
+                    RememberState(from, s);
+                    TrackTurnState(from, s);
                     StateReceived?.Invoke(from, s);
                     Begin(Msg.State, from);
                     s.Write(_w);
@@ -562,16 +689,36 @@ namespace NormalGolfMultiplayer.Net
                 case Msg.Shot:
                 {
                     var shot = ShotEvent.Read(r);
+                    if (!CanShoot(from) || shot.Id == 0)
+                    {
+                        Plugin.Log.LogWarning($"Rejected out-of-turn shot from player {from}; active golfer is {ActiveTurnId}");
+                        break;
+                    }
+                    RememberState(from, shot.State);
+                    _resultPending[from] = shot.Id;
+                    TrackTurnState(from, shot.State);
+                    StateReceived?.Invoke(from, shot.State);
                     ShotReceived?.Invoke(from, shot);
                     Begin(Msg.Shot, from);
                     shot.Write(_w);
                     _net.SendToAll(_w, DeliveryMethod.ReliableOrdered, peer);
-                    AdvanceTurn(from);
+                    AfterShot(from);
+                    break;
+                }
+                case Msg.ShotResult:
+                {
+                    var result = ShotResult.Read(r);
+                    if (!AcceptShotResult(from, result)) break;
+                    ShotResultReceived?.Invoke(from, result);
+                    Begin(Msg.ShotResult, from);
+                    result.Write(_w);
+                    _net.SendToAll(_w, DeliveryMethod.ReliableOrdered, peer);
                     break;
                 }
                 case Msg.Holed:
                 {
                     var holed = HoledEvent.Read(r);
+                    AfterHoled(from);
                     HoledReceived?.Invoke(from, holed);
                     Begin(Msg.Holed, from);
                     holed.Write(_w);
@@ -581,6 +728,7 @@ namespace NormalGolfMultiplayer.Net
                 case Msg.Score:
                 {
                     var card = ScoreCard.Read(r);
+                    TrackTurnScore(from, card);
                     ScoreReceived?.Invoke(from, card);
                     Begin(Msg.Score, from);
                     card.Write(_w);
@@ -609,10 +757,22 @@ namespace NormalGolfMultiplayer.Net
         {
             switch (msg)
             {
+                case Msg.Wind:
+                {
+                    var wind = WindState.Read(r);
+                    if (id == Protocol.HostId && wind.Valid &&
+                        (!HasWind || (short)(wind.Seq - CurrentWind.Seq) > 0))
+                    {
+                        CurrentWind = wind;
+                        HasWind = true;
+                    }
+                    break;
+                }
                 case Msg.Welcome:
                 {
                     var me = PlayerInfo.Read(r);
                     byte activeTurn = r.GetByte();
+                    ReadTurnHole(r);
                     LocalId = me.Id;
                     LocalInfo = me;
                     Players.Clear();
@@ -632,7 +792,7 @@ namespace NormalGolfMultiplayer.Net
                     OnSessionBegan();
                     foreach (var p in others)
                         PlayerJoined?.Invoke(p);
-                    SetActiveTurn(Players.ContainsKey(activeTurn) ? activeTurn : LocalId);
+                    SetActiveTurn(activeTurn == 0 || Players.ContainsKey(activeTurn) ? activeTurn : LocalId);
                     break;
                 }
                 case Msg.PlayerJoined:
@@ -648,6 +808,7 @@ namespace NormalGolfMultiplayer.Net
                     if (Players.TryGetValue(id, out var left) && id != LocalId)
                     {
                         Players.Remove(id);
+                        _resultPending.Remove(id);
                         PlayerLeft?.Invoke(left);
                     }
                     break;
@@ -667,11 +828,29 @@ namespace NormalGolfMultiplayer.Net
                 }
                 case Msg.State:
                     if (id != LocalId && id != 0)
-                        StateReceived?.Invoke(id, PlayerState.Read(r));
+                    {
+                        var state = PlayerState.Read(r);
+                        RememberState(id, state);
+                        StateReceived?.Invoke(id, state);
+                    }
                     break;
                 case Msg.Shot:
                     if (id != LocalId)
-                        ShotReceived?.Invoke(id, ShotEvent.Read(r));
+                    {
+                        var shot = ShotEvent.Read(r);
+                        if (shot.Id == 0 || !Players.ContainsKey(id)) break;
+                        _resultPending[id] = shot.Id;
+                        RememberState(id, shot.State);
+                        StateReceived?.Invoke(id, shot.State);
+                        ShotReceived?.Invoke(id, shot);
+                    }
+                    break;
+                case Msg.ShotResult:
+                    if (id != LocalId)
+                    {
+                        var result = ShotResult.Read(r);
+                        if (AcceptShotResult(id, result)) ShotResultReceived?.Invoke(id, result);
+                    }
                     break;
                 case Msg.Holed:
                     if (id != LocalId)
@@ -688,7 +867,8 @@ namespace NormalGolfMultiplayer.Net
                 case Msg.Turn:
                 {
                     byte activeTurn = r.GetByte();
-                    if (Players.ContainsKey(activeTurn))
+                    ReadTurnHole(r);
+                    if (activeTurn == 0 || Players.ContainsKey(activeTurn))
                         SetActiveTurn(activeTurn);
                     break;
                 }
@@ -703,19 +883,331 @@ namespace NormalGolfMultiplayer.Net
             TurnChanged?.Invoke(id);
         }
 
-        /// <summary>The host keeps the displayed shot order consistent for every peer.</summary>
-        private void AdvanceTurn(byte after)
+        /// <summary>The host keeps one current ball and cup per golfer, resetting tee order when the cup changes.</summary>
+        private void TrackTurnState(byte id, PlayerState state)
         {
-            if (!IsHost || Players.Count == 0)
+            if (!_turnPlayers.TryGetValue(id, out var player))
+                _turnPlayers[id] = player = new TurnPlayer();
+            // Ignore delayed UDP samples: they can otherwise resurrect an old ball position after landing.
+            if (player.HasState && (short)(state.Seq - player.State.Seq) <= 0)
                 return;
-            var order = Players.Keys.OrderBy(id => id).ToArray();
-            byte next = order.FirstOrDefault(id => id > after);
+            player.State = state;
+            player.UpdatedAt = Time.unscaledTime;
+            player.HasState = true;
+            if (!state.Has(StateFlags.HoleKnown) || !Finite(state.HolePos))
+                return;
+
+            if (!player.HasHole)
+            {
+                player.Hole = state.HolePos;
+                player.HasHole = true;
+                player.PendingHole = state.HolePos;
+                player.PendingHoleSince = Time.unscaledTime;
+            }
+            else if ((player.Card == null || !player.Card.HasRound || player.Card.Active) &&
+                     (player.Shots == 0 || player.Holed) &&
+                     (player.Hole - state.HolePos).sqrMagnitude > SameHoleDistanceSquared)
+            {
+                // The reported cup changed (next hole, or a skipped hole): accept it once it is reported
+                // steadily with the ball settled, so a ball in flight cannot race the switch.
+                float now = Time.unscaledTime;
+                if (!state.Has(StateFlags.BallMoving) &&
+                    (state.HolePos - player.PendingHole).sqrMagnitude <= SameHoleDistanceSquared)
+                {
+                    if (now - player.PendingHoleSince >= HoleSwitchDebounce)
+                    {
+                        player.Hole = state.HolePos;
+                        player.Shots = 0;
+                        player.Holed = false;
+                    }
+                }
+                else
+                {
+                    player.PendingHole = state.HolePos;
+                    player.PendingHoleSince = now;
+                }
+            }
+            if (ActiveTurnId == 0 && _pendingShot == 0 && state.Has(StateFlags.InWorld))
+                ChooseTurn(0, player.Hole, state.BallPos);
+            else if (!HasTurnHole && state.Has(StateFlags.InWorld))
+                SetTurnHole(player.Hole);
+        }
+
+        private static bool Finite(Vector3 v) =>
+            !float.IsNaN(v.x) && !float.IsInfinity(v.x) && Mathf.Abs(v.x) < 100000f &&
+            !float.IsNaN(v.y) && !float.IsInfinity(v.y) && Mathf.Abs(v.y) < 100000f &&
+            !float.IsNaN(v.z) && !float.IsInfinity(v.z) && Mathf.Abs(v.z) < 100000f;
+
+        private void TrackTurnScore(byte id, ScoreCard card)
+        {
+            if (!_turnPlayers.TryGetValue(id, out var player))
+                _turnPlayers[id] = player = new TurnPlayer();
+            var old = player.Card;
+            bool changedHole = card.HasRound && (old == null || !old.HasRound ||
+                old.RoundId != card.RoundId || old.CurrentHole != card.CurrentHole);
+            Vector3 previousHole = player.Hole;
+            bool hadHole = player.HasHole;
+            if (changedHole)
+            {
+                player.HasHole = false;
+                player.Shots = 0;
+                player.Holed = false;
+            }
+            // Rejoining during a round must not grant another opening shot. Penalties never undo tee-off.
+            player.Shots = Math.Max(player.Shots, card.Strokes);
+            if (card.HasRound && !card.Active)
+                player.Holed = true;
+            player.Card = new ScoreCard();
+            player.Card.CopyFrom(card);
+            if (changedHole && hadHole && (ActiveTurnId == id || _pendingShot == id))
+            {
+                _pendingShot = 0;
+                ChooseTurn(id, previousHole, player.State.BallPos);
+            }
+        }
+
+        private List<TurnOrder.Candidate> TurnCandidates(Vector3 hole, Vector3 referenceBall)
+        {
+            var candidates = new List<TurnOrder.Candidate>();
+            float now = Time.unscaledTime;
+            foreach (var entry in _turnPlayers)
+            {
+                var p = entry.Value;
+                if (!Players.ContainsKey(entry.Key) || !p.HasHole || !p.HasState ||
+                    now - p.UpdatedAt > 5f || !p.State.Has(StateFlags.InWorld) ||
+                    !p.State.Has(StateFlags.HoleKnown) || !Finite(p.State.BallPos))
+                    continue;
+                // Ball spread is irrelevant: a short drive must stay in the same group as a long drive.
+                bool sameHole = (p.Hole - hole).sqrMagnitude <= SameHoleDistanceSquared;
+                if (!sameHole)
+                    continue;
+                candidates.Add(new TurnOrder.Candidate
+                {
+                    Id = entry.Key,
+                    Shots = p.Shots,
+                    Holed = p.Holed,
+                    // BallTrail lingers after the ball rests, so only the rigidbody counts as "moving".
+                    Settled = !p.State.Has(StateFlags.BallMoving) && !p.State.ShotInProgress,
+                    // Everyone is measured against the same cup, so a drifted pick cannot skew the order.
+                    DistanceSquared = (p.State.BallPos - hole).sqrMagnitude,
+                });
+            }
+            ApplyTeeHonours(hole, candidates);
+            return candidates;
+        }
+
+        private void ApplyTeeHonours(Vector3 hole, List<TurnOrder.Candidate> candidates)
+        {
+            int holeNumber = 0;
+            foreach (var candidate in candidates)
+            {
+                var card = _turnPlayers[candidate.Id].Card;
+                if (!candidate.Holed && card != null && card.HasRound && card.Active)
+                    holeNumber = Math.Max(holeNumber, card.CurrentHole);
+            }
+            if (holeNumber == 0)
+            {
+                // Front Nine can load before its reliable scorecard. Wait for that initial
+                // card instead of accidentally granting a resumed hole to the host.
+                bool awaitingCard = candidates.Any(c => _turnPlayers[c.Id].State.Has(StateFlags.PlayNine) &&
+                    (_turnPlayers[c.Id].Card == null || !_turnPlayers[c.Id].Card.HasRound));
+                if (awaitingCard)
+                    for (int i = 0; i < candidates.Count; i++)
+                    {
+                        var candidate = candidates[i];
+                        if (candidate.Shots == 0) candidate.AwaitingTee = true;
+                        candidates[i] = candidate;
+                    }
+                return; // unscored free play retains the agreed opening order
+            }
+
+            var golfers = new List<TeeHonours.Golfer>();
+            foreach (var entry in _turnPlayers)
+            {
+                var player = entry.Value;
+                var card = player.Card;
+                if (Players.ContainsKey(entry.Key) && player.HasState && player.State.Has(StateFlags.InWorld) &&
+                    ((card != null && card.HasRound && card.Active && card.CurrentHole > 0 && card.CurrentHole <= holeNumber) ||
+                     ((card == null || !card.HasRound) && player.State.Has(StateFlags.PlayNine))))
+                    golfers.Add(new TeeHonours.Golfer { Id = entry.Key, Card = card });
+            }
+            bool scoresReady = TeeHonours.TryOrder(golfers, holeNumber, out var order);
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                var candidate = candidates[i];
+                int rank = order.IndexOf(candidate.Id);
+                candidate.TeeRank = rank >= 0 ? rank : order.Count;
+                if (rank >= 0 && candidate.Shots == 0)
+                    candidate.AwaitingTee = !scoresReady || !candidate.Settled ||
+                        !_turnPlayers[candidate.Id].State.Has(StateFlags.BallVisible);
+                candidates[i] = candidate;
+            }
+            // A golfer still finishing the previous hole or walking to this tee keeps their
+            // earned place. Do not let an earlier arrival play ahead of them.
+            for (int rank = 0; rank < order.Count; rank++)
+            {
+                byte id = order[rank];
+                if (candidates.Any(p => p.Id == id)) continue;
+                var player = _turnPlayers[id];
+                bool onThisHole = player.HasHole && (player.Hole - hole).sqrMagnitude <= SameHoleDistanceSquared;
+                int shots = onThisHole ? player.Shots : 0;
+                candidates.Add(new TurnOrder.Candidate { Id = id, TeeRank = rank, Shots = shots,
+                    Holed = onThisHole && player.Holed, AwaitingTee = shots == 0,
+                    Settled = false, DistanceSquared = -1f });
+            }
+        }
+
+        private void AfterShot(byte id)
+        {
+            if (!_turnPlayers.TryGetValue(id, out var player) || !player.HasState ||
+                !player.State.Has(StateFlags.HoleKnown) || !Finite(player.State.HolePos))
+            {
+                if (player != null)
+                    player.Shots++;
+                PublishTurn(0); // No flag means no defensible distance comparison.
+                return;
+            }
+            // The first shot on a hole is played from the tee with the golfer aiming at the pin, so its
+            // pick is the hole being played. Later shots aim wherever the golfer faces (often just the
+            // ball), so mid-hole the captured cup is kept and only a hole-out unlocks a new capture.
+            Vector3 hole = player.Hole;
+            bool newHole = false;
+            if (!player.HasHole || player.Holed || player.Shots == 0)
+            {
+                hole = player.State.HolePos;
+                newHole = !player.HasHole || (player.Hole - hole).sqrMagnitude > SameHoleDistanceSquared;
+                player.Hole = hole;
+                player.HasHole = true;
+            }
+            player.Shots = newHole ? 1 : player.Shots + 1;
+            player.Holed = false;
+            player.PendingHole = hole;
+            player.PendingHoleSince = Time.unscaledTime;
+            _pendingShot = id;
+            _pendingShotAt = Time.unscaledTime;
+            _pendingHole = hole;
+            SetTurnHole(hole);
+
+            byte opening = TurnOrder.NextOpeningShot(TurnCandidates(player.Hole, player.State.BallPos));
+            if (opening != 0)
+            {
+                _pendingShot = 0;
+                PublishTurn(opening);
+            }
+            else
+            {
+                // The last tee shot (or any later shot) must land before its distance can be compared.
+                PublishTurn(0);
+            }
+        }
+
+        private void AfterHoled(byte id)
+        {
+            if (!_turnPlayers.TryGetValue(id, out var player) || !player.HasHole)
+                return;
+            player.Holed = true;
+            if (_pendingShot == id)
+                _pendingShot = 0;
+            ChooseTurn(id, player.Hole, player.State.BallPos);
+        }
+
+        private void FinishPendingShot(float now)
+        {
+            Vector3 referenceBall = _turnPlayers.TryGetValue(_pendingShot, out var shooter2) && shooter2.HasState
+                ? shooter2.State.BallPos
+                : _pendingHole;
+            var candidates = TurnCandidates(_pendingHole, referenceBall);
+            byte opening = TurnOrder.NextOpeningShot(candidates);
+            if (opening != 0)
+            {
+                _pendingShot = 0;
+                PublishTurn(opening);
+                return;
+            }
+
+            if (now - _pendingShotAt < 0.9f)
+                return;
+            // A long drive can take more than 18 seconds. Keep waiting until fresh samples say it rests.
+            if (_turnPlayers.TryGetValue(_pendingShot, out var shooter) &&
+                now - shooter.UpdatedAt <= 5f &&
+                (shooter.UpdatedAt <= _pendingShotAt + 0.1f || shooter.State.Has(StateFlags.BallMoving) || shooter.State.ShotInProgress))
+                return;
+            if (candidates.Any(c => !c.Holed && !c.Settled))
+                return;
+            _pendingShot = 0;
+            PublishTurn(TurnOrder.FarthestBall(candidates));
+        }
+
+        private void ChooseTurn(byte after, Vector3 hole, Vector3 referenceBall)
+        {
+            SetTurnHole(hole);
+            var candidates = TurnCandidates(hole, referenceBall);
+            byte next = TurnOrder.NextOpeningShot(candidates);
+            if (next == 0 && candidates.Any(c => !c.Holed && !c.Settled))
+            {
+                _pendingShot = after;
+                _pendingHole = hole;
+                _pendingShotAt = Time.unscaledTime - 0.9f;
+                PublishTurn(0);
+                return;
+            }
             if (next == 0)
-                next = order[0];
+                next = TurnOrder.FarthestBall(candidates);
+            PublishTurn(next);
+        }
+
+        private void PublishTurn(byte next)
+        {
+            if (!IsHost || ActiveTurnId == next)
+                return;
             SetActiveTurn(next);
             Begin(Msg.Turn, Protocol.HostId);
             _w.Put(next);
+            WriteTurnHole(_w);
             _net.SendToAll(_w, DeliveryMethod.ReliableOrdered);
+        }
+
+        private void SetTurnHole(Vector3 hole)
+        {
+            if (!HasTurnHole || (TurnHole - hole).sqrMagnitude > SameHoleDistanceSquared)
+            {
+                TurnHole = hole;
+                HasTurnHole = true;
+                // The flag is part of turn state even when the same golfer has the next tee honour.
+                Begin(Msg.Turn, Protocol.HostId);
+                _w.Put(ActiveTurnId);
+                WriteTurnHole(_w);
+                _net.SendToAll(_w, DeliveryMethod.ReliableOrdered);
+            }
+        }
+
+        private void WriteTurnHole(NetDataWriter w)
+        {
+            w.Put(HasTurnHole);
+            w.Put(TurnHole.x); w.Put(TurnHole.y); w.Put(TurnHole.z);
+        }
+
+        private void ReadTurnHole(NetDataReader r)
+        {
+            HasTurnHole = r.GetBool();
+            TurnHole = new Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat());
+            HasTurnHole &= Finite(TurnHole);
+        }
+
+        private void RememberState(byte id, PlayerState state)
+        {
+            if (!_latestStates.TryGetValue(id, out var old) || (short)(state.Seq - old.Seq) > 0)
+                _latestStates[id] = state;
+        }
+
+        public bool TryGetTurnDistance(byte id, out float metres)
+        {
+            metres = 0f;
+            if (!HasTurnHole || !_latestStates.TryGetValue(id, out var state) ||
+                !state.Has(StateFlags.InWorld) || !Finite(state.BallPos))
+                return false;
+            metres = Mathf.Sqrt((state.BallPos - TurnHole).sqrMagnitude);
+            return true;
         }
 
         // ------------------------------------------------------------------ helpers

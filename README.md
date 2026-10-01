@@ -41,14 +41,17 @@ What that means in practice:
 |---|---|
 | **See each other** | Other players appear as golfers with name tags, walking, crouching and looking around |
 | **Watch the shots** | Their address stance and swing are animated, timed to their real shot, with the club-hit sound placed in the world |
+| **Shot notifications** | When another golfer's shot finishes, see its stroke number, contact and shape, distance travelled including roll, and distance remaining to the cup |
 | **Follow every ball** | Each player's ball flies with a trail in their colour and a name marker so you can spot where it landed |
 | **Front Nine scoreboard** | Everyone's card side by side: hole, par, and a row per player, with penalties counted the way the game counts them |
 | **Chat & player list** | In-game chat, ping, distances, and a "Go to" button to teleport next to a friend |
-| **Shot order** | The HUD and multiplayer menu show whose turn is next; the host advances it after every shot |
+| **Shot order** | New-hole tees follow the previous hole's gross scores, with ties keeping the previous tee order; after everyone tees off, the farthest settled ball plays. Waiting golfers cannot swing, and their ball markers turn grey |
+| **Shared wind** | Everyone uses the host's wind direction and strength for both the wind indicator and ball physics |
 
 Everyone keeps their own save, story progress and money — this adds people to your world, it doesn't merge saves.
 Other players and their balls never collide with you, so nobody can ruin your shot.
-The shot order is a guide for taking turns with friends. It does not block anyone from swinging.
+The shot order blocks waiting golfers from hitting the ball. Green ground markers identify the active golfer;
+grey markers identify waiting golfers. Walking and aiming remain available while waiting.
 
 <p align="center">
   <img src="screenshots/03_remote_player_golf_stance.png" width="49%" alt="A player lining up a shot">
@@ -57,7 +60,7 @@ The shot order is a guide for taking turns with friends. It does not block anyon
 
 ## Install
 
-Download `NormalGolfMultiplayer-v0.3.2.zip` from the [latest release](../../releases/latest). Then:
+Download `NormalGolfMultiplayer-v0.4.0.zip` from the [latest release](../../releases/latest). Then:
 
 1. **Find the game folder.** In Steam: right-click Normal Golf Game → Manage → Browse local files, then open
    the **`Normal`** folder inside it — the one containing `Normal Golf Game.exe`.
